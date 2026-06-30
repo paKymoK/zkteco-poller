@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyodbc
+from typing import Dict, List, Set
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 from loguru import logger
@@ -75,7 +76,7 @@ def get_db_connection() -> pyodbc.Connection:
     return pyodbc.connect(DB_CONN_STR, autocommit=False)
 
 
-def fetch_existing_keys(conn: pyodbc.Connection, user_id: str, start: datetime, end: datetime) -> set[datetime]:
+def fetch_existing_keys(conn: pyodbc.Connection, user_id: str, start: datetime, end: datetime) -> Set[datetime]:
     """
     Return set of CHECKTIME values already in CHECKINOUT for this employee
     within the lookback window. Used for deduplication.
@@ -89,7 +90,7 @@ def fetch_existing_keys(conn: pyodbc.Connection, user_id: str, start: datetime, 
     return {row.CHECKTIME for row in cursor.fetchall()}
 
 
-def insert_records(conn: pyodbc.Connection, records: list[dict]) -> int:
+def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
     """
     Insert records into CHECKINOUT, skipping any that already exist.
     Returns count of rows actually inserted.
@@ -98,7 +99,7 @@ def insert_records(conn: pyodbc.Connection, records: list[dict]) -> int:
         return 0
 
     # Group records by employee so we only query existing keys once per employee
-    by_employee: dict[str, list[dict]] = {}
+    by_employee: Dict[str, List[dict]] = {}
     for r in records:
         by_employee.setdefault(r["employee_id"], []).append(r)
 
@@ -142,7 +143,7 @@ def insert_records(conn: pyodbc.Connection, records: list[dict]) -> int:
 
 # ── Per machine ───────────────────────────────────────────────────────────────
 
-def poll_machine(machine: dict, start: datetime, end: datetime) -> list[dict]:
+def poll_machine(machine: dict, start: datetime, end: datetime) -> List[dict]:
     ip, port, mid = machine["ip"], machine["port"], machine["machine_id"]
 
     try:
@@ -176,7 +177,7 @@ def run_poll():
     logger.info(f"Machines: {len(MACHINES)}")
     logger.info("=" * 50)
 
-    all_records: list[dict] = []
+    all_records: List[dict] = []
 
     with ThreadPoolExecutor(max_workers=max(len(MACHINES), 1)) as ex:
         futures = {ex.submit(poll_machine, m, start, end): m for m in MACHINES}

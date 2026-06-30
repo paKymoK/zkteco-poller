@@ -7,6 +7,7 @@ The DLL must be registered via:
 """
 
 from datetime import datetime
+from typing import Optional
 from loguru import logger
 import pythoncom
 import win32com.client
@@ -172,7 +173,7 @@ class ZKDevice:
         """Pull all attendance records stored on the device."""
         return self._fetch_logs(machine_id, use_time_filter=False)
 
-    def read_attendance_logs_by_range(self, machine_id: int, start: datetime, end: datetime) -> list[dict]:
+    def read_attendance_logs_by_range(self, machine_id: int, start: datetime, end: datetime) -> list:
         """
         Pull attendance records within a date range.
         Falls back to pulling all logs and filtering in Python if the device
@@ -198,9 +199,9 @@ class ZKDevice:
         self,
         machine_id: int,
         use_time_filter: bool = False,
-        start: datetime | None = None,
-        end: datetime | None = None,
-    ) -> list[dict]:
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> list:
         records = []
         try:
             if use_time_filter and start and end:
