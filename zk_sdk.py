@@ -168,6 +168,10 @@ class ZKDevice:
 
     # ── Attendance Logs ───────────────────────────────────────────────────────
 
+    def read_all_attendance_logs(self, machine_id: int) -> list:
+        """Pull every attendance record stored on the device with no date filter."""
+        return self._fetch_logs(machine_id)
+
     def read_attendance_logs_by_range(self, machine_id: int, start: datetime, end: datetime) -> list:
         """Pull all logs from device and filter to the requested date range in Python."""
         records = self._fetch_logs(machine_id)

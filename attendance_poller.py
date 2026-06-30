@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyodbc
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 from loguru import logger
@@ -89,17 +89,28 @@ def get_db_connection() -> pyodbc.Connection:
     return pyodbc.connect(DB_CONN_STR, autocommit=False)
 
 
-def fetch_existing_keys(conn: pyodbc.Connection, user_id: int, start: datetime, end: datetime) -> Set[datetime]:
+def fetch_existing_keys(
+    conn: pyodbc.Connection,
+    user_id: int,
+    start: Optional[datetime],
+    end: datetime,
+) -> Set[datetime]:
     """
-    Return set of CHECKTIME values already in CHECKINOUT for this employee
-    within the lookback window. Used for deduplication.
+    Return set of CHECKTIME values already in CHECKINOUT for this employee.
+    If start is None, fetches all records for the employee (no date filter).
     """
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT CHECKTIME FROM CHECKINOUT "
-        "WHERE USERID = ? AND CHECKTIME >= ? AND CHECKTIME <= ?",
-        user_id, start, end
-    )
+    if start is None:
+        cursor.execute(
+            "SELECT CHECKTIME FROM CHECKINOUT WHERE USERID = ?",
+            user_id
+        )
+    else:
+        cursor.execute(
+            "SELECT CHECKTIME FROM CHECKINOUT "
+            "WHERE USERID = ? AND CHECKTIME >= ? AND CHECKTIME <= ?",
+            user_id, start, end
+        )
     return {row.CHECKTIME for row in cursor.fetchall()}
 
 
@@ -117,12 +128,11 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
         uid = int(r["employee_id"])
         by_employee.setdefault(uid, []).append(r)
 
-    # Determine overall window covered by this batch
     all_times = [
         datetime(r["year"], r["month"], r["day"], r["hour"], r["minute"], r["second"])
         for r in records
     ]
-    window_start = min(all_times)
+    window_start = min(all_times) if LOOKBACK_DAYS > 0 else None
     window_end   = max(all_times)
 
     inserted = 0
@@ -162,7 +172,7 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
 
 # ── Per machine ───────────────────────────────────────────────────────────────
 
-def poll_machine(machine: dict, start: datetime, end: datetime) -> List[dict]:
+def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> List[dict]:
     ip, port, mid = machine["ip"], machine["port"], machine["machine_id"]
 
     try:
@@ -187,8 +197,12 @@ def poll_machine(machine: dict, start: datetime, end: datetime) -> List[dict]:
         else:
             logger.warning(f"[Machine {mid}] Clock drift: unavailable")
 
-        records = sdk.read_attendance_logs_by_range(mid, start, end)
-        logger.info(f"[Machine {mid}] ✓ {len(records)} records in window")
+        if start is None:
+            records = sdk.read_all_attendance_logs(mid)
+            logger.info(f"[Machine {mid}] ✓ {len(records)} total records (no date filter)")
+        else:
+            records = sdk.read_attendance_logs_by_range(mid, start, end)
+            logger.info(f"[Machine {mid}] ✓ {len(records)} records in window")
         return records
     finally:
         sdk.disconnect(mid)
@@ -197,19 +211,26 @@ def poll_machine(machine: dict, start: datetime, end: datetime) -> List[dict]:
 # ── Poll cycle ────────────────────────────────────────────────────────────────
 
 def run_poll():
-    end   = datetime.now()
-    start = end - timedelta(days=LOOKBACK_DAYS)
+    end = datetime.now()
+
+    # POLL_LOOKBACK_DAYS=0 means pull everything on the device (no date filter)
+    if LOOKBACK_DAYS == 0:
+        start = None
+        window_label = "ALL"
+    else:
+        start = end - timedelta(days=LOOKBACK_DAYS)
+        window_label = f"{start.strftime('%Y-%m-%d')} → {end.strftime('%Y-%m-%d')} ({LOOKBACK_DAYS}d)"
 
     logger.info("=" * 50)
     logger.info(f"Attendance poll | {end.strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"Window : {start.strftime('%Y-%m-%d')} → {end.strftime('%Y-%m-%d')} ({LOOKBACK_DAYS}d)")
+    logger.info(f"Window  : {window_label}")
     logger.info(f"Machines: {len(MACHINES)}")
     logger.info("=" * 50)
 
     all_records: List[dict] = []
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = {ex.submit(poll_machine, m, start, end): m for m in MACHINES}
+        futures = {ex.submit(poll_machine, m, start, end): m for m in MACHINES}  # start=None means pull all
         for f in as_completed(futures):
             mid = futures[f]["machine_id"]
             try:
@@ -278,7 +299,7 @@ if __name__ == "__main__":
 
     logger.info("=" * 50)
     logger.info("ZKTeco Attendance Poller")
-    logger.info(f"Lookback    : {LOOKBACK_DAYS} days")
+    logger.info(f"Lookback    : {LOOKBACK_DAYS} days" if LOOKBACK_DAYS > 0 else "Lookback    : ALL (no date filter)")
     logger.info(f"Daily at    : {POLL_TIME}")
     logger.info(f"Max workers : {MAX_WORKERS}")
     logger.info(f"Machines    : {len(MACHINES)}")
