@@ -25,13 +25,53 @@ zkteco-poller/
 
 - Windows OS (64-bit)
 - 32-bit Python 3.9 — required to match the 32-bit `zkemkeeper.dll`
-- `zkemkeeper.dll` registered (installed automatically by ATT2000)
+- `zkemkeeper.dll` registered — ATT2000 does this automatically; manual steps below if needed
 - ODBC Driver 17 for SQL Server installed on the machine
 
-Register the DLL if needed (run CMD as Administrator):
+### Registering zkemkeeper.dll
+
+ATT2000 registers the DLL automatically on install. Only follow these steps if
+the DLL is missing or the registry was cleared.
+
+**Step 1 — Locate the DLL**
+
+Check these paths (most common first):
+```
+C:\Windows\SysWOW64\zkemkeeper.dll    ← most common (32-bit DLL on 64-bit Windows)
+C:\Program Files\ZKTeco\ATT2000\
+C:\Program Files (x86)\ZKTeco\ATT2000\
+C:\ZKTime\
+```
+
+**Step 2 — Register (run CMD as Administrator)**
+
+1. Press **Win**, type `cmd`, right-click → **Run as Administrator**
+2. Run:
 ```cmd
 C:\Windows\SysWOW64\regsvr32.exe C:\Windows\SysWOW64\zkemkeeper.dll
 ```
+> Use the `regsvr32.exe` in `SysWOW64`, not `System32` — the DLL is 32-bit and needs the 32-bit registrar.
+
+Success message: `DllRegisterServer in C:\Windows\SysWOW64\zkemkeeper.dll succeeded.`
+
+**Step 3 — Verify**
+
+Open 32-bit PowerShell (must be 32-bit — 64-bit tools cannot see the DLL):
+```cmd
+C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe
+```
+Then run:
+```powershell
+New-Object -ComObject zkemkeeper.ZKEM
+```
+Success: prints a COM object. Failure (`Class not registered`): re-run Step 2 as Administrator.
+
+| Problem | Fix |
+|---|---|
+| `DLL not found` | Verify path with `dir C:\Windows\SysWOW64\zkemkeeper.dll` |
+| `Access denied` | Right-click CMD → Run as Administrator |
+| `Class not registered` in PowerShell | Use `SysWOW64\WindowsPowerShell` not the default 64-bit one |
+| Popup says `failed` | Reinstall ATT2000 or copy DLL from another working machine |
 
 ---
 
