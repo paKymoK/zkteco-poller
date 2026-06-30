@@ -34,8 +34,21 @@ load_dotenv("config/.env")
 
 CONNECT_TIMEOUT = int(os.getenv("CONNECT_TIMEOUT_SECONDS", 5))
 LOOKBACK_DAYS   = int(os.getenv("POLL_LOOKBACK_DAYS", 7))
-POLL_TIME       = os.getenv("POLL_TIME", "01:00")          # HH:MM daily trigger
-DB_CONN_STR     = os.getenv("DB_CONNECTION_STRING", "")
+POLL_TIME       = os.getenv("POLL_TIME", "01:00")
+
+DB_CONN_STR = (
+    "DRIVER={{ODBC Driver 17 for SQL Server}};"
+    "SERVER={server},{port};"
+    "DATABASE={db};"
+    "UID={user};"
+    "PWD={pwd}"
+).format(
+    server=os.getenv("DB_SERVER", ""),
+    port=os.getenv("DB_PORT", "1433"),
+    db=os.getenv("DB_NAME", ""),
+    user=os.getenv("DB_USER", ""),
+    pwd=os.getenv("DB_PASSWORD", ""),
+)
 
 MACHINES = []
 for entry in os.getenv("WATCH_MACHINES", os.getenv("MACHINES", "")).split(","):
@@ -68,10 +81,9 @@ signal.signal(signal.SIGTERM, shutdown)
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_db_connection() -> pyodbc.Connection:
-    if not DB_CONN_STR:
+    if not os.getenv("DB_SERVER") or not os.getenv("DB_USER"):
         raise RuntimeError(
-            "DB_CONNECTION_STRING is not set in config/.env\n"
-            "Example: DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=att2000;UID=sa;PWD=secret"
+            "DB_SERVER and DB_USER must be set in config/.env"
         )
     return pyodbc.connect(DB_CONN_STR, autocommit=False)
 

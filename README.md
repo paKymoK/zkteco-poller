@@ -89,8 +89,12 @@ POLL_LOOKBACK_DAYS=7
 # Time to run the daily poll (24h HH:MM)
 POLL_TIME=01:00
 
-# SQL Server connection string
-DB_CONNECTION_STRING=DRIVER={ODBC Driver 17 for SQL Server};SERVER=192.168.1.10;DATABASE=att2000;UID=sa;PWD=yourpassword
+# SQL Server
+DB_SERVER=ip_address
+DB_PORT=1433
+DB_NAME=Att2000
+DB_USER=your_username
+DB_PASSWORD=your_password
 ```
 
 ---
