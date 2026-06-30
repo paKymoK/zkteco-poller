@@ -1,0 +1,14 @@
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs
+logs/
+
+# Env — contains credentials
+config/.env
