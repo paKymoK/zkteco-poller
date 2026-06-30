@@ -35,6 +35,7 @@ load_dotenv("config/.env")
 CONNECT_TIMEOUT = int(os.getenv("CONNECT_TIMEOUT_SECONDS", 5))
 LOOKBACK_DAYS   = int(os.getenv("POLL_LOOKBACK_DAYS", 7))
 POLL_TIME       = os.getenv("POLL_TIME", "01:00")
+MAX_WORKERS     = int(os.getenv("MAX_WORKERS", 10))
 
 DB_CONN_STR = (
     "DRIVER={{ODBC Driver 17 for SQL Server}};"
@@ -197,7 +198,7 @@ def run_poll():
 
     all_records: List[dict] = []
 
-    with ThreadPoolExecutor(max_workers=max(len(MACHINES), 1)) as ex:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(poll_machine, m, start, end): m for m in MACHINES}
         for f in as_completed(futures):
             mid = futures[f]["machine_id"]
@@ -269,6 +270,7 @@ if __name__ == "__main__":
     logger.info("ZKTeco Attendance Poller")
     logger.info(f"Lookback    : {LOOKBACK_DAYS} days")
     logger.info(f"Daily at    : {POLL_TIME}")
+    logger.info(f"Max workers : {MAX_WORKERS}")
     logger.info(f"Machines    : {len(MACHINES)}")
     for m in MACHINES:
         logger.info(f"  Machine {m['machine_id']} → {m['ip']}:{m['port']}")
