@@ -205,17 +205,20 @@ class ZKDevice:
         records = []
         try:
             if use_time_filter and start and end:
-                # ReadTimeGLogData filters by date on supported firmware.
-                # Format expected by SDK: "YYYY-MM-DD HH:MM:SS"
-                ok = self.sdk.ReadTimeGLogData(
-                    machine_id,
-                    start.strftime("%Y-%m-%d %H:%M:%S"),
-                    end.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                if not ok:
+                try:
+                    ok = self.sdk.ReadTimeGLogData(
+                        machine_id,
+                        start.strftime("%Y-%m-%d %H:%M:%S"),
+                        end.strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    if not ok:
+                        raise RuntimeError("ReadTimeGLogData returned false")
+                except Exception as e:
+                    # F18 firmware may not support ReadTimeGLogData — fall back to
+                    # pulling all logs and filtering in Python (read_attendance_logs_by_range)
                     logger.warning(
-                        f"[Machine {machine_id}] ReadTimeGLogData returned false — "
-                        f"falling back to ReadGeneralLogData"
+                        f"[Machine {machine_id}] ReadTimeGLogData not supported ({e}) — "
+                        f"falling back to ReadGeneralLogData with Python filter"
                     )
                     self.sdk.ReadGeneralLogData(machine_id)
             else:
