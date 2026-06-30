@@ -274,6 +274,17 @@ if __name__ == "__main__":
         logger.info(f"  Machine {m['machine_id']} → {m['ip']}:{m['port']}")
     logger.info("=" * 50)
 
+    # Verify DB connection before starting
+    logger.info("Checking database connection...")
+    try:
+        conn = get_db_connection()
+        conn.close()
+        logger.info("Database connection OK")
+    except Exception as e:
+        logger.error(f"Database connection failed at startup: {e}")
+        logger.error("Fix DB_SERVER / DB_USER / DB_PASSWORD in config/.env and restart.")
+        sys.exit(1)
+
     # Run immediately on start so you don't have to wait until scheduled time
     logger.info("Running initial poll now...")
     run_poll()
