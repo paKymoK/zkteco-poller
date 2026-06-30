@@ -7,7 +7,6 @@ The DLL must be registered via:
 """
 
 from datetime import datetime
-from typing import Optional
 from loguru import logger
 import pythoncom
 import win32com.client
@@ -169,60 +168,24 @@ class ZKDevice:
 
     # ── Attendance Logs ───────────────────────────────────────────────────────
 
-    def read_attendance_logs(self, machine_id: int) -> list[dict]:
-        """Pull all attendance records stored on the device."""
-        return self._fetch_logs(machine_id, use_time_filter=False)
-
     def read_attendance_logs_by_range(self, machine_id: int, start: datetime, end: datetime) -> list:
-        """
-        Pull attendance records within a date range.
-        Falls back to pulling all logs and filtering in Python if the device
-        ignores the time params (some F18 firmwares do).
-        """
-        records = self._fetch_logs(machine_id, use_time_filter=True, start=start, end=end)
-
-        # If device returned records outside the requested range, it ignored the filter.
-        # Apply Python-side filter as safety net.
+        """Pull all logs from device and filter to the requested date range in Python."""
+        records = self._fetch_logs(machine_id)
         filtered = [
             r for r in records
             if start <= datetime(r["year"], r["month"], r["day"],
                                  r["hour"], r["minute"], r["second"]) <= end
         ]
-        if len(filtered) < len(records):
-            logger.debug(
-                f"[Machine {machine_id}] Device ignored time filter — "
-                f"dropped {len(records) - len(filtered)} out-of-range records in Python"
-            )
+        logger.debug(
+            f"[Machine {machine_id}] {len(filtered)} records in window "
+            f"(filtered from {len(records)} total on device)"
+        )
         return filtered
 
-    def _fetch_logs(
-        self,
-        machine_id: int,
-        use_time_filter: bool = False,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
-    ) -> list:
+    def _fetch_logs(self, machine_id: int) -> list:
         records = []
         try:
-            if use_time_filter and start and end:
-                try:
-                    ok = self.sdk.ReadTimeGLogData(
-                        machine_id,
-                        start.strftime("%Y-%m-%d %H:%M:%S"),
-                        end.strftime("%Y-%m-%d %H:%M:%S"),
-                    )
-                    if not ok:
-                        raise RuntimeError("ReadTimeGLogData returned false")
-                except Exception as e:
-                    # F18 firmware may not support ReadTimeGLogData — fall back to
-                    # pulling all logs and filtering in Python (read_attendance_logs_by_range)
-                    logger.warning(
-                        f"[Machine {machine_id}] ReadTimeGLogData not supported ({e}) — "
-                        f"falling back to ReadGeneralLogData with Python filter"
-                    )
-                    self.sdk.ReadGeneralLogData(machine_id)
-            else:
-                self.sdk.ReadGeneralLogData(machine_id)
+            self.sdk.ReadGeneralLogData(machine_id)
 
             while True:
                 enroll = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BSTR, "")
