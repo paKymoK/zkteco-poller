@@ -1,22 +1,22 @@
-# ZKTeco Diagnostic Monitor
+# ZKTeco Attendance Poller
 
-Lightweight read-only monitor for ZKTeco F18 machines.
-Connects to each machine periodically and logs health info.
-No attendance data is pulled. No database writes.
+Daily job that pulls attendance logs directly from ZKTeco F18 machines via
+`zkemkeeper.dll` and inserts any missing records into ATT2000's `CHECKINOUT`
+table in SQL Server. Safe to run multiple times — deduplicates before inserting.
 
 ---
 
 ## Files
 
 ```
-zkteco_diagnostic/
-├── build.bat           ← build the exe
-├── diagnostic.py       ← main script
-├── zk_sdk.py           ← ZKTeco SDK wrapper
-├── requirements.txt    ← Python dependencies
-├── REGISTER_DLL.md     ← how to register zkemkeeper.dll
+zkteco-poller/
+├── attendance_poller.py  ← main script
+├── zk_sdk.py             ← ZKTeco SDK wrapper
+├── requirements.txt      ← Python dependencies
+├── build.bat             ← build ZKTecoPoller.exe
+├── build.config          ← path to 32-bit Python
 └── config/
-    └── .env            ← configuration
+    └── .env              ← configuration
 ```
 
 ---
@@ -24,21 +24,33 @@ zkteco_diagnostic/
 ## Prerequisites
 
 - Windows OS (64-bit)
-- 32-bit Python 3.9 — download from https://www.python.org/downloads/windows/
-- `zkemkeeper.dll` registered — see `REGISTER_DLL.md`
+- 32-bit Python 3.9 — required to match the 32-bit `zkemkeeper.dll`
+- `zkemkeeper.dll` registered (installed automatically by ATT2000)
+- ODBC Driver 17 for SQL Server installed on the machine
+
+Register the DLL if needed (run CMD as Administrator):
+```cmd
+C:\Windows\SysWOW64\regsvr32.exe C:\Windows\SysWOW64\zkemkeeper.dll
+```
 
 ---
 
 ## Configuration
 
-Edit `config\.env` before running:
+Edit `config\.env`:
 
 ```env
-# How often to check each machine (in seconds)
-DIAGNOSTIC_INTERVAL_SECONDS=30
-
 # Machines to monitor — format: IP:PORT:MACHINE_ID
 WATCH_MACHINES=192.168.1.101:4370:1,192.168.1.102:4370:2
+
+# How many days back to pull logs (safety buffer)
+POLL_LOOKBACK_DAYS=7
+
+# Time to run the daily poll (24h HH:MM)
+POLL_TIME=01:00
+
+# SQL Server connection string
+DB_CONNECTION_STRING=DRIVER={ODBC Driver 17 for SQL Server};SERVER=192.168.1.10;DATABASE=att2000;UID=sa;PWD=yourpassword
 ```
 
 ---
@@ -51,16 +63,16 @@ Run `build.bat` on your build machine (requires 32-bit Python):
 build.bat
 ```
 
-Output: `dist\ZKTecoDiagnostic.exe`
+Output: `dist\ZKTecoPoller.exe`
 
 ---
 
-## Deploy to UAT / Production
+## Deploy
 
 Copy these two items to the target machine:
 
 ```
-ZKTecoDiagnostic.exe
+ZKTecoPoller.exe
 config\.env
 ```
 
@@ -73,11 +85,12 @@ The `logs\` folder is created automatically on first run.
 Open Command Prompt and run:
 
 ```cmd
-cd C:\ZKTecoDiagnostic
-ZKTecoDiagnostic.exe
+cd C:\ZKTecoPoller
+ZKTecoPoller.exe
 ```
 
-Keep the window open to see live output. Press `Ctrl+C` to stop.
+Runs an initial poll immediately on start, then repeats daily at `POLL_TIME`.
+Press `Ctrl+C` to stop.
 
 ---
 
@@ -85,40 +98,8 @@ Keep the window open to see live output. Press `Ctrl+C` to stop.
 
 | File | Content | Kept |
 |---|---|---|
-| `logs\diagnostic_<date>.log` | All output — INFO, WARNING, ERROR | 3 days |
-| `logs\error.log` | Errors only | 1 month, max 10MB |
-
-**Check `error.log` first** when something goes wrong — it only contains errors,
-no noise from normal operation.
-
----
-
-## Sample Output
-
-**Healthy machines:**
-```
-──────────────────────────────────────────────────
-Diagnostic cycle | 14:30:05 | 2 machines
-──────────────────────────────────────────────────
-[Machine 1] ✓ 192.168.1.101 | ZMM210_TFT | S/N:8116211361237 | Users:150 | Logs:1523 | Drift:3s ✓ | 0.4s
-[Machine 2] ✓ 192.168.1.102 | ZMM210_TFT | S/N:8116211361238 | Users:148 | Logs:892  | Drift:5s ✓ | 0.5s
-```
-
-**Unreachable machine:**
-```
-[Machine 2] ✗ Unreachable — 192.168.1.102:4370
-```
-
-**Clock drift warning:**
-```
-[Machine 1] ✓ 192.168.1.101 | ZMM210_TFT | S/N:8116211361237 | Users:150 | Logs:1523 | Drift:134s ⚠ | 0.4s
-[Machine 1] ⚠ Clock drift 134s — sync via ATT2000 → Device Management → Sync Time
-```
-
-**Cycle skipped (interval too short):**
-```
-⏭ Cycle skipped at 14:30:06 — previous cycle still running. Increase DIAGNOSTIC_INTERVAL_SECONDS.
-```
+| `logs\attendance_poller_<date>.log` | All output | 2 months |
+| `logs\error_<date>.log` | Errors only | 2 months |
 
 ---
 
@@ -127,47 +108,37 @@ Diagnostic cycle | 14:30:05 | 2 machines
 Use NSSM to run as a background service that starts automatically:
 
 **Step 1 — Download NSSM:**
-```
-https://nssm.cc/download
-```
 Place `nssm.exe` at `C:\tools\nssm.exe`
 
 **Step 2 — Install service (run CMD as Administrator):**
 ```cmd
-C:\tools\nssm.exe install ZKTecoDiagnostic
+C:\tools\nssm.exe install ZKTecoPoller
 ```
 
 Fill in the GUI:
 
 | Field | Value |
 |---|---|
-| Path | `C:\ZKTecoDiagnostic\ZKTecoDiagnostic.exe` |
-| Startup directory | `C:\ZKTecoDiagnostic` |
+| Path | `C:\ZKTecoPoller\ZKTecoPoller.exe` |
+| Startup directory | `C:\ZKTecoPoller` |
 
 **Step 3 — Configure logging:**
 ```cmd
-C:\tools\nssm.exe set ZKTecoDiagnostic AppStdout C:\ZKTecoDiagnostic\logs\service_out.log
-C:\tools\nssm.exe set ZKTecoDiagnostic AppStderr C:\ZKTecoDiagnostic\logs\service_err.log
-C:\tools\nssm.exe set ZKTecoDiagnostic AppExit Default Restart
+C:\tools\nssm.exe set ZKTecoPoller AppStdout C:\ZKTecoPoller\logs\service_out.log
+C:\tools\nssm.exe set ZKTecoPoller AppStderr C:\ZKTecoPoller\logs\service_err.log
+C:\tools\nssm.exe set ZKTecoPoller AppExit Default Restart
 ```
 
 **Step 4 — Start:**
 ```cmd
-C:\tools\nssm.exe start ZKTecoDiagnostic
+C:\tools\nssm.exe start ZKTecoPoller
 ```
 
 **Step 5 — Verify:**
 ```cmd
-C:\tools\nssm.exe status ZKTecoDiagnostic
+C:\tools\nssm.exe status ZKTecoPoller
 ```
 Should print: `SERVICE_RUNNING`
-
-**Other commands:**
-```cmd
-C:\tools\nssm.exe stop ZKTecoDiagnostic
-C:\tools\nssm.exe restart ZKTecoDiagnostic
-C:\tools\nssm.exe remove ZKTecoDiagnostic confirm
-```
 
 ---
 
@@ -175,9 +146,7 @@ C:\tools\nssm.exe remove ZKTecoDiagnostic confirm
 
 | Problem | Fix |
 |---|---|
-| Exe closes immediately | Run from CMD to see error output |
-| `SDK init failed` | Register `zkemkeeper.dll` — see `REGISTER_DLL.md` |
-| All machines unreachable | Check network — ping the machine IPs |
-| `⏭ Cycle skipped` frequently | Increase `DIAGNOSTIC_INTERVAL_SECONDS` |
-| Clock drift warning | Sync device time via ATT2000 → Device Management → Sync Time |
-| `config\.env` not found | Place `config` folder in same directory as exe |
+| `SDK init failed` | Register `zkemkeeper.dll` — see Prerequisites above |
+| `DB connection failed` | Check `DB_CONNECTION_STRING` and SQL Server connectivity |
+| Machine unreachable | Verify IP/port in `WATCH_MACHINES` and network access |
+| Records not appearing in ATT2000 | Check `CHECKINOUT` directly; verify `USERID` matches ATT2000 employee IDs |

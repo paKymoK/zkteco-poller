@@ -1,6 +1,6 @@
 @echo off
 echo ================================
-echo  ZKTeco Tools - Build Script
+echo  ZKTeco Poller - Build Script
 echo ================================
 echo.
 
@@ -43,7 +43,7 @@ echo [OK] 32-bit Python confirmed
 echo.
 
 :: ── Install dependencies ──────────────────────────────────────────────────────
-echo [1/5] Installing dependencies...
+echo [1/3] Installing dependencies...
 %PYTHON32% -m pip install --only-binary :all: greenlet==2.0.2
 %PYTHON32% -m pip install -r requirements.txt
 %PYTHON32% -m pip install pyinstaller
@@ -55,61 +55,14 @@ if %errorlevel% neq 0 (
 echo.
 
 :: ── Clean previous build ──────────────────────────────────────────────────────
-echo [2/5] Cleaning previous build...
+echo [2/3] Cleaning previous build...
 if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
-if exist ZKTecoDiagnostic.spec del ZKTecoDiagnostic.spec
-if exist ZKTecoPingCheck.spec del ZKTecoPingCheck.spec
 if exist ZKTecoPoller.spec del ZKTecoPoller.spec
 echo.
 
-:: ── Build diagnostic exe ──────────────────────────────────────────────────────
-echo [3/5] Building ZKTecoDiagnostic.exe...
-%PYTHON32% -m PyInstaller ^
-    --onefile ^
-    --name ZKTecoDiagnostic ^
-    --add-data "config/.env;config" ^
-    --hidden-import apscheduler ^
-    --hidden-import apscheduler.schedulers.blocking ^
-    --hidden-import apscheduler.executors.pool ^
-    --hidden-import apscheduler.jobstores.memory ^
-    --hidden-import apscheduler.triggers.interval ^
-    --hidden-import win32com ^
-    --hidden-import win32com.client ^
-    --hidden-import pywintypes ^
-    --hidden-import loguru ^
-    --hidden-import dotenv ^
-    diagnostic.py
-if %errorlevel% neq 0 (
-    echo [ERROR] ZKTecoDiagnostic build failed.
-    pause
-    exit /b 1
-)
-echo.
-
-:: ── Build ping checker exe ────────────────────────────────────────────────────
-echo [4/5] Building ZKTecoPingCheck.exe...
-%PYTHON32% -m PyInstaller ^
-    --onefile ^
-    --name ZKTecoPingCheck ^
-    --add-data "config/.env;config" ^
-    --hidden-import apscheduler ^
-    --hidden-import apscheduler.schedulers.blocking ^
-    --hidden-import apscheduler.executors.pool ^
-    --hidden-import apscheduler.jobstores.memory ^
-    --hidden-import apscheduler.triggers.interval ^
-    --hidden-import loguru ^
-    --hidden-import dotenv ^
-    ping_check.py
-if %errorlevel% neq 0 (
-    echo [ERROR] ZKTecoPingCheck build failed.
-    pause
-    exit /b 1
-)
-echo.
-
 :: ── Build attendance poller exe ───────────────────────────────────────────────
-echo [5/5] Building ZKTecoPoller.exe...
+echo [3/3] Building ZKTecoPoller.exe...
 %PYTHON32% -m PyInstaller ^
     --onefile ^
     --name ZKTecoPoller ^
@@ -137,12 +90,10 @@ echo ================================
 echo  Build complete!
 echo ================================
 echo.
-echo  Outputs:
-echo    - dist\ZKTecoDiagnostic.exe  (health monitor    - needs DLL registered)
-echo    - dist\ZKTecoPingCheck.exe   (ping only         - no DLL needed)
-echo    - dist\ZKTecoPoller.exe      (attendance poller - needs DLL + SQL Server)
+echo  Output: dist\ZKTecoPoller.exe
 echo.
-echo  Transfer to server:
-echo    - dist\ZKTecoPoller.exe  + config\.env
+echo  Deploy to server:
+echo    - dist\ZKTecoPoller.exe
+echo    - config\.env
 echo.
 pause
