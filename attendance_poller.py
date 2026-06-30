@@ -161,7 +161,7 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 uid,
                 punch_time,
-                str(r["in_out_mode"]),
+                str(r["in_out_mode"]) if r["in_out_mode"] != 255 else None,
                 r["verify_mode"],
                 str(r["work_code"]),
                 str(uid),
