@@ -177,6 +177,16 @@ def poll_machine(machine: dict, start: datetime, end: datetime) -> List[dict]:
         return []
 
     try:
+        info = sdk.get_device_info(mid)
+        drift = info.get("clock_drift_seconds")
+        if drift is not None:
+            if drift >= 60:
+                logger.warning(f"[Machine {mid}] Clock drift: {drift}s ⚠ HIGH — timestamps may fall outside lookback window")
+            else:
+                logger.info(f"[Machine {mid}] Clock drift: {drift}s ✓")
+        else:
+            logger.warning(f"[Machine {mid}] Clock drift: unavailable")
+
         records = sdk.read_attendance_logs_by_range(mid, start, end)
         logger.info(f"[Machine {mid}] ✓ {len(records)} records in window")
         return records
