@@ -161,10 +161,10 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 uid,
                 punch_time,
-                str(r["in_out_mode"])[:1],    # nvarchar(1)
-                r["verify_mode"],             # int
-                str(r["work_code"])[:24],     # varchar(24)
-                str(uid)[:24],                # Badgenumber nvarchar(24)
+                str(r["in_out_mode"]),
+                r["verify_mode"],
+                str(r["work_code"]),
+                str(uid),
                 "ZKPoller",                   # InsertedBy noreply
                 now,                          # InsertedDate datetime
             )
