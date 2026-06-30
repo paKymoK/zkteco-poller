@@ -88,7 +88,7 @@ def get_db_connection() -> pyodbc.Connection:
     return pyodbc.connect(DB_CONN_STR, autocommit=False)
 
 
-def fetch_existing_keys(conn: pyodbc.Connection, user_id: str, start: datetime, end: datetime) -> Set[datetime]:
+def fetch_existing_keys(conn: pyodbc.Connection, user_id: int, start: datetime, end: datetime) -> Set[datetime]:
     """
     Return set of CHECKTIME values already in CHECKINOUT for this employee
     within the lookback window. Used for deduplication.
@@ -111,9 +111,10 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
         return 0
 
     # Group records by employee so we only query existing keys once per employee
-    by_employee: Dict[str, List[dict]] = {}
+    by_employee: Dict[int, List[dict]] = {}
     for r in records:
-        by_employee.setdefault(r["employee_id"], []).append(r)
+        uid = int(r["employee_id"])
+        by_employee.setdefault(uid, []).append(r)
 
     # Determine overall window covered by this batch
     all_times = [
@@ -124,6 +125,7 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
     window_end   = max(all_times)
 
     inserted = 0
+    now = datetime.now()
     cursor = conn.cursor()
 
     for uid, emp_records in by_employee.items():
@@ -138,13 +140,17 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
                 continue
 
             cursor.execute(
-                "INSERT INTO CHECKINOUT (USERID, CHECKTIME, CHECKTYPE, VERIFYCODE, WorkCode) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO CHECKINOUT "
+                "(USERID, CHECKTIME, CHECKTYPE, VERIFYCODE, WorkCode, Badgenumber, InsertedBy, InsertedDate) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 uid,
                 punch_time,
-                r["in_out_mode"],
-                r["verify_mode"],
-                r["work_code"],
+                str(r["in_out_mode"]),       # nvarchar(1)
+                r["verify_mode"],             # int
+                str(r["work_code"]),          # varchar(24)
+                str(uid),                     # Badgenumber nvarchar(24)
+                "ZKPoller",                   # InsertedBy nvarchar(20)
+                now,                          # InsertedDate datetime
             )
             existing.add(punch_time)  # guard against dupes within the same batch
             inserted += 1
