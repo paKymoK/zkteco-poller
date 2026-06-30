@@ -150,6 +150,11 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
             if punch_time in existing:
                 continue
 
+            logger.debug(
+                f"[Insert] USERID={uid} CHECKTIME={punch_time} "
+                f"CHECKTYPE={r['in_out_mode']!r} VERIFYCODE={r['verify_mode']} "
+                f"WorkCode={r['work_code']!r} Badgenumber={str(uid)!r}"
+            )
             cursor.execute(
                 "INSERT INTO CHECKINOUT "
                 "(USERID, CHECKTIME, CHECKTYPE, VERIFYCODE, WorkCode, Badgenumber, InsertedBy, InsertedDate) "
@@ -160,7 +165,7 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
                 r["verify_mode"],             # int
                 str(r["work_code"])[:24],     # varchar(24)
                 str(uid)[:24],                # Badgenumber nvarchar(24)
-                "ZKPoller",                   # InsertedBy nvarchar(20)
+                "ZKPoller",                   # InsertedBy noreply
                 now,                          # InsertedDate datetime
             )
             existing.add(punch_time)  # guard against dupes within the same batch
