@@ -6,12 +6,19 @@ any missing records into ATT2000's CHECKINOUT table in SQL Server.
 Runs once immediately on start, then on a daily schedule (default 01:00).
 Safe to run multiple times — deduplicates against existing DB records.
 
+Also runs a lightweight periodic health check (connect/disconnect only, no
+log reads) that logs an error whenever a machine can't be reached. Machines
+currently being polled are skipped by the health check to avoid opening a
+second concurrent session against the same device.
+
 Config in config/.env:
     WATCH_MACHINES=IP:PORT:MACHINE_ID (comma-separated)
     POLL_LOOKBACK_DAYS=7
     POLL_TIME=01:00
     DB_CONNECTION_STRING=...
     CONNECT_TIMEOUT_SECONDS=5
+    PING_ENABLED=true
+    PING_INTERVAL_MINUTES=5
 """
 
 import os
@@ -36,6 +43,9 @@ CONNECT_TIMEOUT = int(os.getenv("CONNECT_TIMEOUT_SECONDS", 5))
 LOOKBACK_DAYS   = int(os.getenv("POLL_LOOKBACK_DAYS", 7))
 POLL_TIME       = os.getenv("POLL_TIME", "01:00")
 MAX_WORKERS     = int(os.getenv("MAX_WORKERS", 10))
+CLOCK_DRIFT_THRESHOLD_SECONDS = int(os.getenv("CLOCK_DRIFT_THRESHOLD_SECONDS", 60))
+PING_ENABLED    = os.getenv("PING_ENABLED", "true").strip().lower() == "true"
+PING_INTERVAL_MINUTES = int(os.getenv("PING_INTERVAL_MINUTES", 5))
 
 DB_CONN_STR = (
     "DRIVER={{ODBC Driver 17 for SQL Server}};"
@@ -60,6 +70,11 @@ for entry in os.getenv("WATCH_MACHINES", os.getenv("MACHINES", "")).split(","):
         })
 
 _scheduler = None
+
+# Machine IDs currently being polled — the health check skips these to avoid
+# opening a second concurrent session against a device mid-poll.
+_machines_in_poll: Set[int] = set()
+_machines_in_poll_lock = threading.Lock()
 
 
 # ── Graceful shutdown ─────────────────────────────────────────────────────────
@@ -186,31 +201,62 @@ def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> Lis
         logger.error(f"[Machine {mid}] SDK init failed: {e}")
         return []
 
-    connected = sdk.connect(ip, port, mid, timeout=CONNECT_TIMEOUT)
-    if not connected:
-        logger.error(f"[Machine {mid}] ✗ Unreachable — {ip}:{port}")
-        return []
+    with _machines_in_poll_lock:
+        _machines_in_poll.add(mid)
 
     try:
-        info = sdk.get_device_info(mid)
-        drift = info.get("clock_drift_seconds")
-        if drift is not None:
-            if drift >= 60:
-                logger.warning(f"[Machine {mid}] Clock drift: {drift}s ⚠ HIGH — timestamps may fall outside lookback window")
-            else:
-                logger.info(f"[Machine {mid}] Clock drift: {drift}s ✓")
-        else:
-            logger.warning(f"[Machine {mid}] Clock drift: unavailable")
+        connected = sdk.connect(ip, port, mid, timeout=CONNECT_TIMEOUT)
+        if not connected:
+            logger.error(f"[Machine {mid}] ✗ Unreachable — {ip}:{port}")
+            return []
 
-        if start is None:
-            records = sdk.read_all_attendance_logs(mid)
-            logger.info(f"[Machine {mid}] ✓ {len(records)} total records (no date filter)")
-        else:
-            records = sdk.read_attendance_logs_by_range(mid, start, end)
-            logger.info(f"[Machine {mid}] ✓ {len(records)} records in window")
-        return records
+        try:
+            info = sdk.get_device_info(mid)
+            drift = info.get("clock_drift_seconds")
+            if drift is not None:
+                if drift >= CLOCK_DRIFT_THRESHOLD_SECONDS:
+                    logger.error(f"[Machine {mid}] Clock drift: {drift}s ⚠ HIGH — timestamps may fall outside lookback window")
+                else:
+                    logger.info(f"[Machine {mid}] Clock drift: {drift}s ✓")
+            else:
+                logger.error(f"[Machine {mid}] Clock drift: unavailable")
+
+            if start is None:
+                records = sdk.read_all_attendance_logs(mid)
+                logger.info(f"[Machine {mid}] ✓ {len(records)} total records (no date filter)")
+            else:
+                records = sdk.read_attendance_logs_by_range(mid, start, end)
+                logger.info(f"[Machine {mid}] ✓ {len(records)} records in window")
+            return records
+        finally:
+            sdk.disconnect(mid)
     finally:
-        sdk.disconnect(mid)
+        with _machines_in_poll_lock:
+            _machines_in_poll.discard(mid)
+
+
+def ping_machine(machine: dict) -> bool:
+    """Connect/disconnect only, to check that a machine is reachable. No log reads."""
+    ip, port, mid = machine["ip"], machine["port"], machine["machine_id"]
+
+    with _machines_in_poll_lock:
+        if mid in _machines_in_poll:
+            logger.debug(f"[Machine {mid}] Ping skipped — poll in progress")
+            return True
+
+    try:
+        sdk = ZKDevice()
+    except ZKSDKError as e:
+        logger.error(f"[Machine {mid}] Ping failed — SDK init error: {e}")
+        return False
+
+    connected = sdk.connect(ip, port, mid, timeout=CONNECT_TIMEOUT)
+    if not connected:
+        logger.error(f"[Machine {mid}] Ping failed — unreachable at {ip}:{port}")
+        return False
+
+    sdk.disconnect(mid)
+    return True
 
 
 # ── Poll cycle ────────────────────────────────────────────────────────────────
@@ -267,6 +313,19 @@ def run_poll():
         conn.close()
 
 
+# ── Health check ──────────────────────────────────────────────────────────────
+
+def run_health_check():
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = {ex.submit(ping_machine, m): m for m in MACHINES}
+        for f in as_completed(futures):
+            mid = futures[f]["machine_id"]
+            try:
+                f.result()
+            except Exception as e:
+                logger.error(f"[Machine {mid}] Ping failed — unhandled error: {e}")
+
+
 # ── Entry ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -307,6 +366,8 @@ if __name__ == "__main__":
     logger.info(f"Lookback    : {LOOKBACK_DAYS} days" if LOOKBACK_DAYS > 0 else "Lookback    : ALL (no date filter)")
     logger.info(f"Daily at    : {POLL_TIME}")
     logger.info(f"Max workers : {MAX_WORKERS}")
+    logger.info(f"Drift limit : {CLOCK_DRIFT_THRESHOLD_SECONDS}s")
+    logger.info(f"Ping health : every {PING_INTERVAL_MINUTES}min" if PING_ENABLED else "Ping health : disabled")
     logger.info(f"Machines    : {len(MACHINES)}")
     for m in MACHINES:
         logger.info(f"  Machine {m['machine_id']} → {m['ip']}:{m['port']}")
@@ -335,6 +396,17 @@ if __name__ == "__main__":
         minute=poll_minute,
         misfire_grace_time=300,
         coalesce=True,
+        max_instances=1,
     )
+
+    if PING_ENABLED:
+        _scheduler.add_job(
+            run_health_check,
+            "interval",
+            minutes=PING_INTERVAL_MINUTES,
+            coalesce=True,
+            max_instances=1,
+        )
+
     logger.info(f"Scheduler started — next poll at {POLL_TIME} daily. Press Ctrl+C to stop.")
     _scheduler.start()
