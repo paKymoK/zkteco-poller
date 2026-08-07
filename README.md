@@ -89,6 +89,13 @@ POLL_LOOKBACK_DAYS=7
 # Time to run the daily poll (24h HH:MM)
 POLL_TIME=01:00
 
+# Clock drift (device vs server time) at/above this many seconds is logged as an error
+CLOCK_DRIFT_THRESHOLD_SECONDS=60
+
+# Periodic connect/disconnect ping between polls, to catch unreachable machines early
+PING_ENABLED=true
+PING_INTERVAL_MINUTES=5
+
 # SQL Server
 DB_SERVER=ip_address
 DB_PORT=1433
