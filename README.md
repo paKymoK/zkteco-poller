@@ -1,10 +1,33 @@
 # ZKTeco Attendance Poller
 
+[🇻🇳 Tiếng Việt](README.vi.md)
+
 Daily job that pulls attendance logs directly from ZKTeco machines via
 `zkemkeeper.dll` and inserts any missing records into ATT2000's `CHECKINOUT`
 table in SQL Server. Safe to run multiple times — deduplicates before inserting.
-Also runs a lightweight periodic ping between polls to catch unreachable
-machines early.
+
+## What this app does
+
+It runs two independent scheduled jobs in the same process:
+
+- **Attendance sync (backfill)** (`run_poll`, daily at `POLL_TIME`) — connects
+  to each machine in `WATCH_MACHINES`, reads attendance logs (within a
+  lookback window, or the machine's entire log — see `POLL_LOOKBACK_DAYS`),
+  checks each machine's clock drift against the server
+  (`CLOCK_DRIFT_THRESHOLD_SECONDS`), then inserts any attendance records not
+  already in `CHECKINOUT` (deduplicated by employee/time). Also runs once
+  immediately on startup.
+- **Health check** (`run_health_check`, every `PING_INTERVAL_MINUTES`, if
+  `PING_ENABLED=true`) — connects and disconnects only, no log reads, no DB
+  writes. Logs an error for any machine that can't be reached, so connection
+  problems surface sooner than waiting for the next daily poll.
+
+Both jobs poll machines concurrently (capped by `MAX_WORKERS`) and each job
+only allows one running instance at a time, so a slow or hung machine won't
+cause the next scheduled run to overlap the one still in progress.
+Additionally, if a health-check cycle lands while a machine is mid-poll, that
+machine is skipped for that ping (rather than opening a second connection to
+it) — most ZKTeco firmware only tolerates one active session at a time.
 
 ---
 
@@ -209,5 +232,6 @@ Should print: `SERVICE_RUNNING`
 | `SDK init failed` | Register `zkemkeeper.dll` — see Prerequisites above |
 | `DB connection failed` | Check `DB_SERVER`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` in `config\.env` and SQL Server connectivity |
 | Machine unreachable | Verify IP/port in `WATCH_MACHINES` and network access |
+| Repeated `Ping failed` for one machine | The health check has confirmed a real connectivity/power issue, not a blip — check the machine on-site. This doesn't affect the next scheduled attendance poll; it retries that machine independently |
 | `Clock drift ... HIGH` error in logs | Not a bug — the device's clock differs from the server by more than `CLOCK_DRIFT_THRESHOLD_SECONDS`. Resync the device's clock, or raise the threshold if the drift is expected |
 | Records not appearing in ATT2000 | Check `CHECKINOUT` directly; verify `USERID` matches ATT2000 employee IDs |
