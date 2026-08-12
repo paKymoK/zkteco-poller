@@ -71,13 +71,12 @@ echo [3/3] Building ZKTecoPoller.exe...
     --hidden-import apscheduler.schedulers.blocking ^
     --hidden-import apscheduler.executors.pool ^
     --hidden-import apscheduler.jobstores.memory ^
-    --hidden-import apscheduler.triggers.cron ^
+    --hidden-import apscheduler.triggers.interval ^
     --hidden-import win32com ^
     --hidden-import win32com.client ^
     --hidden-import pywintypes ^
     --hidden-import loguru ^
     --hidden-import dotenv ^
-    --hidden-import pyodbc ^
     attendance_poller.py
 if %errorlevel% neq 0 (
     echo [ERROR] ZKTecoPoller build failed.

@@ -1,33 +1,25 @@
-# ZKTeco Attendance Poller
+# ZKTeco Machine Health Monitor
 
 [🇻🇳 Tiếng Việt](README.vi.md)
 
-Daily job that pulls attendance logs directly from ZKTeco machines via
-`zkemkeeper.dll` and inserts any missing records into ATT2000's `CHECKINOUT`
-table in SQL Server. Safe to run multiple times — deduplicates before inserting.
+Lightweight periodic health monitor for ZKTeco attendance machines. Connects
+to each configured machine, checks reachability and clock drift against the
+server, then disconnects — no attendance log reads, no database. Runs once
+immediately on start, then repeats every `PING_INTERVAL_MINUTES`.
 
 ## What this app does
 
-It runs two independent scheduled jobs in the same process:
+`run_health_check` pings every machine in `WATCH_MACHINES` concurrently
+(capped by `MAX_WORKERS`). For each machine it:
 
-- **Attendance sync (backfill)** (`run_poll`, daily at `POLL_TIME`) — connects
-  to each machine in `WATCH_MACHINES`, reads attendance logs (within a
-  lookback window, or the machine's entire log — see `POLL_LOOKBACK_DAYS`),
-  checks each machine's clock drift against the server
-  (`CLOCK_DRIFT_THRESHOLD_SECONDS`), then inserts any attendance records not
-  already in `CHECKINOUT` (deduplicated by employee/time). Also runs once
-  immediately on startup.
-- **Health check** (`run_health_check`, every `PING_INTERVAL_MINUTES`, if
-  `PING_ENABLED=true`) — connects and disconnects only, no log reads, no DB
-  writes. Logs an error for any machine that can't be reached, so connection
-  problems surface sooner than waiting for the next daily poll.
+- Connects and logs an error if the machine can't be reached
+  (`CONNECT_TIMEOUT_SECONDS`)
+- Checks the machine's clock against the server and logs an error if the
+  drift is at or above `CLOCK_DRIFT_THRESHOLD_SECONDS`
+- Disconnects
 
-Both jobs poll machines concurrently (capped by `MAX_WORKERS`) and each job
-only allows one running instance at a time, so a slow or hung machine won't
-cause the next scheduled run to overlap the one still in progress.
-Additionally, if a health-check cycle lands while a machine is mid-poll, that
-machine is skipped for that ping (rather than opening a second connection to
-it) — most ZKTeco firmware only tolerates one active session at a time.
+Only one health-check cycle runs at a time — if a cycle is still running when
+the next one is due, the next one is skipped rather than overlapping it.
 
 ---
 
@@ -51,7 +43,6 @@ zkteco-poller/
 - Windows OS (64-bit)
 - 32-bit Python 3.9 — required to match the 32-bit `zkemkeeper.dll`
 - `zkemkeeper.dll` registered — ATT2000 does this automatically; manual steps below if needed
-- ODBC Driver 17 for SQL Server installed on the machine
 
 ### Registering zkemkeeper.dll
 
@@ -112,26 +103,11 @@ WATCH_MACHINES=192.168.1.101:4370:1,192.168.1.102:4370:2
 CONNECT_TIMEOUT_SECONDS=5
 MAX_WORKERS=10
 
-# How many days back to pull logs (safety buffer). Set to 0 to pull ALL records
-# from the device with no date filter
-POLL_LOOKBACK_DAYS=7
-
-# Time to run the daily poll (24h HH:MM)
-POLL_TIME=01:00
-
 # Clock drift (device vs server time) at/above this many seconds is logged as an error
 CLOCK_DRIFT_THRESHOLD_SECONDS=60
 
-# Periodic connect/disconnect ping between polls, to catch unreachable machines early
-PING_ENABLED=true
+# How often to ping each machine, in minutes
 PING_INTERVAL_MINUTES=5
-
-# SQL Server
-DB_SERVER=ip_address
-DB_PORT=1433
-DB_NAME=Att2000
-DB_USER=your_username
-DB_PASSWORD=your_password
 ```
 
 ---
@@ -170,10 +146,8 @@ cd C:\ZKTecoPoller
 ZKTecoPoller.exe
 ```
 
-Runs an initial poll immediately on start, then repeats daily at `POLL_TIME`.
-If `PING_ENABLED=true` (default), it also pings every configured machine every
-`PING_INTERVAL_MINUTES` to catch unreachable machines between polls. Press
-`Ctrl+C` to stop.
+Runs an initial health check immediately on start, then repeats every
+`PING_INTERVAL_MINUTES`. Press `Ctrl+C` to stop.
 
 ---
 
@@ -230,8 +204,6 @@ Should print: `SERVICE_RUNNING`
 | Problem | Fix |
 |---|---|
 | `SDK init failed` | Register `zkemkeeper.dll` — see Prerequisites above |
-| `DB connection failed` | Check `DB_SERVER`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` in `config\.env` and SQL Server connectivity |
 | Machine unreachable | Verify IP/port in `WATCH_MACHINES` and network access |
-| Repeated `Ping failed` for one machine | The health check has confirmed a real connectivity/power issue, not a blip — check the machine on-site. This doesn't affect the next scheduled attendance poll; it retries that machine independently |
+| Repeated `Ping failed` for one machine | Confirms a real connectivity/power issue, not a blip — check the machine on-site |
 | `Clock drift ... HIGH` error in logs | Not a bug — the device's clock differs from the server by more than `CLOCK_DRIFT_THRESHOLD_SECONDS`. Resync the device's clock, or raise the threshold if the drift is expected |
-| Records not appearing in ATT2000 | Check `CHECKINOUT` directly; verify `USERID` matches ATT2000 employee IDs |

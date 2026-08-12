@@ -1,35 +1,25 @@
-# ZKTeco Attendance Poller
+# ZKTeco Machine Health Monitor
 
 [🇬🇧 English](README.md)
 
-Job chạy hàng ngày, lấy dữ liệu chấm công trực tiếp từ các máy ZKTeco thông
-qua `zkemkeeper.dll` và chèn các bản ghi còn thiếu vào bảng `CHECKINOUT` của
-ATT2000 trong SQL Server. An toàn khi chạy nhiều lần — tự loại bỏ bản ghi trùng
-trước khi chèn.
+Ứng dụng theo dõi tình trạng kết nối của các máy chấm công ZKTeco theo chu kỳ.
+Kết nối tới từng máy đã cấu hình, kiểm tra khả năng kết nối và độ lệch giờ so
+với server, sau đó ngắt kết nối — không đọc log chấm công, không dùng database.
+Chạy ngay một lần khi khởi động, sau đó lặp lại mỗi `PING_INTERVAL_MINUTES`.
 
 ## Ứng dụng này làm gì
 
-Ứng dụng chạy hai job độc lập theo lịch, trong cùng một tiến trình:
+`run_health_check` ping tới từng máy trong `WATCH_MACHINES` đồng thời (giới
+hạn bởi `MAX_WORKERS`). Với mỗi máy, ứng dụng sẽ:
 
-- **Đồng bộ chấm công (backfill)** (`run_poll`, chạy hàng ngày lúc `POLL_TIME`)
-  — kết nối tới từng máy trong `WATCH_MACHINES`, đọc log chấm công (trong một
-  khoảng thời gian lookback, hoặc toàn bộ log của máy — xem `POLL_LOOKBACK_DAYS`),
-  kiểm tra độ lệch giờ của từng máy so với giờ server (`CLOCK_DRIFT_THRESHOLD_SECONDS`),
-  sau đó chèn các bản ghi chấm công chưa có trong `CHECKINOUT` (loại trùng theo
-  nhân viên/thời gian). Cũng chạy ngay một lần khi khởi động.
-- **Kiểm tra kết nối (health check)** (`run_health_check`, chạy mỗi
-  `PING_INTERVAL_MINUTES`, nếu `PING_ENABLED=true`) — chỉ kết nối rồi ngắt kết
-  nối, không đọc log, không ghi DB. Ghi log lỗi cho bất kỳ máy nào không kết
-  nối được, để phát hiện sự cố kết nối sớm hơn thay vì phải chờ tới lần poll
-  hàng ngày tiếp theo mới biết.
+- Kết nối và ghi log lỗi nếu không kết nối được (`CONNECT_TIMEOUT_SECONDS`)
+- Kiểm tra đồng hồ của máy so với server, ghi log lỗi nếu độ lệch từ
+  `CLOCK_DRIFT_THRESHOLD_SECONDS` trở lên
+- Ngắt kết nối
 
-Cả hai job đều poll các máy đồng thời (giới hạn bởi `MAX_WORKERS`) và mỗi job
-chỉ cho phép chạy một instance tại một thời điểm, nên một máy chạy chậm hoặc bị
-treo sẽ không khiến lần chạy theo lịch tiếp theo bị chồng lên lần đang chạy.
-Ngoài ra, nếu chu kỳ health check rơi đúng vào lúc một máy đang được poll, máy
-đó sẽ được bỏ qua ở lượt ping đó (không mở thêm một kết nối thứ hai tới cùng
-một máy) — vì hầu hết firmware ZKTeco chỉ chấp nhận một phiên kết nối tại một
-thời điểm.
+Chỉ một chu kỳ health check được chạy tại một thời điểm — nếu chu kỳ hiện tại
+vẫn đang chạy khi tới lúc chu kỳ tiếp theo, chu kỳ tiếp theo đó sẽ bị bỏ qua
+thay vì chạy chồng lên.
 
 ---
 
@@ -54,7 +44,6 @@ zkteco-poller/
 - Python 3.9 bản 32-bit — bắt buộc để khớp với `zkemkeeper.dll` (32-bit)
 - Đã đăng ký `zkemkeeper.dll` — ATT2000 tự đăng ký khi cài đặt; nếu chưa có thì
   làm theo hướng dẫn thủ công bên dưới
-- Đã cài ODBC Driver 17 for SQL Server trên máy chạy job
 
 ### Đăng ký zkemkeeper.dll
 
@@ -121,41 +110,16 @@ Sửa file `config\.env`:
 # Danh sách máy cần theo dõi — định dạng: IP:PORT:MACHINE_ID (cách nhau bằng dấu phẩy)
 WATCH_MACHINES=192.168.1.101:4370:1,192.168.1.102:4370:2
 
-# Số giây chờ máy chấp nhận kết nối trước khi bỏ cuộc. Số lượng máy được kết
-# nối đồng thời, áp dụng riêng cho cả job poll hàng ngày lẫn job health check
-# (mỗi job có giới hạn worker riêng, không dùng chung). Máy vượt quá số này sẽ
-# chờ tới khi có worker thread rảnh.
+# Số giây chờ máy chấp nhận kết nối trước khi bỏ cuộc, và số lượng máy được
+# kết nối đồng thời (máy vượt quá số này sẽ chờ tới khi có worker thread rảnh)
 CONNECT_TIMEOUT_SECONDS=5
 MAX_WORKERS=10
 
-# Số giây lệch giờ giữa máy và server trước khi bị ghi log lỗi (đồng hồ máy bị
-# lệch có thể khiến thời gian chấm công rơi ra ngoài khoảng lookback, làm mất
-# bản ghi mà không báo).
+# Số giây lệch giờ giữa máy và server trước khi bị ghi log lỗi
 CLOCK_DRIFT_THRESHOLD_SECONDS=60
 
-# Kiểm tra kết nối định kỳ, độc lập với job poll hàng ngày — chỉ kết nối rồi
-# ngắt kết nối (không đọc log, không ghi DB), ghi log lỗi cho từng máy không
-# kết nối được. Máy đang được poll sẽ tự động bị bỏ qua ở lượt ping đó. Đặt
-# PING_ENABLED=false để tắt hoàn toàn tính năng này.
-PING_ENABLED=true
+# Chu kỳ ping tới từng máy, tính bằng phút
 PING_INTERVAL_MINUTES=5
-
-# Số ngày lấy log lùi về trước mỗi lần poll (khoảng đệm an toàn phòng khi lỡ
-# một lần poll). Đặt = 0 để lấy TOÀN BỘ log của máy, không lọc theo ngày
-# (dùng cho lần chạy đầu tiên / backfill dữ liệu máy, sau đó chuyển lại về
-# khoảng thời gian bình thường).
-POLL_LOOKBACK_DAYS=7
-
-# Giờ chạy poll chấm công hàng ngày (định dạng 24h HH:MM). Ngoài ra cũng chạy
-# ngay một lần khi khởi động.
-POLL_TIME=01:00
-
-# SQL Server
-DB_SERVER=ip_address
-DB_PORT=1433
-DB_NAME=Att2000
-DB_USER=your_username
-DB_PASSWORD=your_password
 ```
 
 ---
@@ -194,9 +158,8 @@ cd C:\ZKTecoPoller
 ZKTecoPoller.exe
 ```
 
-Chạy ngay một lần poll khi khởi động, sau đó lặp lại hàng ngày vào lúc
-`POLL_TIME`. Job health check (nếu `PING_ENABLED=true`) sẽ bắt đầu chạy song
-song, mỗi `PING_INTERVAL_MINUTES` một lần. Nhấn `Ctrl+C` để dừng.
+Chạy ngay một lượt health check khi khởi động, sau đó lặp lại mỗi
+`PING_INTERVAL_MINUTES`. Nhấn `Ctrl+C` để dừng.
 
 ---
 
@@ -253,8 +216,6 @@ Sẽ in ra: `SERVICE_RUNNING`
 | Vấn đề | Cách khắc phục |
 |---|---|
 | `SDK init failed` | Đăng ký `zkemkeeper.dll` — xem phần Yêu cầu trước khi chạy ở trên |
-| `DB connection failed` | Kiểm tra `DB_SERVER`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` trong `config\.env` và kết nối tới SQL Server |
 | Máy không kết nối được (Machine unreachable) | Kiểm tra lại IP/port trong `WATCH_MACHINES` và kết nối mạng |
-| Lỗi `Ping failed` lặp lại nhiều lần cho một máy | Health check xác nhận đây là sự cố kết nối/nguồn điện thực sự, không phải lỗi tạm thời — cần kiểm tra máy tại chỗ; không ảnh hưởng tới lần poll chấm công theo lịch tiếp theo, job đó vẫn sẽ tự thử lại độc lập |
+| Lỗi `Ping failed` lặp lại nhiều lần cho một máy | Xác nhận đây là sự cố kết nối/nguồn điện thực sự, không phải lỗi tạm thời — cần kiểm tra máy tại chỗ |
 | Lỗi `Clock drift ... HIGH` trong log | Không phải bug — đồng hồ máy đang lệch so với giờ server nhiều hơn `CLOCK_DRIFT_THRESHOLD_SECONDS`. Chỉnh lại đồng hồ máy, hoặc tăng ngưỡng này lên nếu độ lệch đó là bình thường |
-| Bản ghi không xuất hiện trong ATT2000 | Kiểm tra trực tiếp bảng `CHECKINOUT`; đảm bảo `USERID` khớp với mã nhân viên trong ATT2000 |
