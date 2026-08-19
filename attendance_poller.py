@@ -194,11 +194,12 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
 
 def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> List[dict]:
     ip, port, mid = machine["ip"], machine["port"], machine["machine_id"]
+    tag = f"[Machine {mid}][{ip}]"
 
     try:
         sdk = ZKDevice()
     except ZKSDKError as e:
-        logger.error(f"[Machine {mid}] SDK init failed: {e}")
+        logger.error(f"{tag} SDK init failed: {e}")
         return []
 
     with _machines_in_poll_lock:
@@ -207,7 +208,7 @@ def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> Lis
     try:
         connected = sdk.connect(ip, port, mid, timeout=CONNECT_TIMEOUT)
         if not connected:
-            logger.error(f"[Machine {mid}] ✗ Unreachable — {ip}:{port}")
+            logger.error(f"{tag} ✗ Unreachable")
             return []
 
         try:
@@ -215,18 +216,18 @@ def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> Lis
             drift = info.get("clock_drift_seconds")
             if drift is not None:
                 if drift >= CLOCK_DRIFT_THRESHOLD_SECONDS:
-                    logger.error(f"[Machine {mid}] Clock drift: {drift}s ⚠ HIGH — timestamps may fall outside lookback window")
+                    logger.error(f"{tag} Clock drift: {drift}s ⚠ HIGH — timestamps may fall outside lookback window")
                 else:
-                    logger.info(f"[Machine {mid}] Clock drift: {drift}s ✓")
+                    logger.info(f"{tag} Clock drift: {drift}s ✓")
             else:
-                logger.error(f"[Machine {mid}] Clock drift: unavailable")
+                logger.error(f"{tag} Clock drift: unavailable")
 
             if start is None:
                 records = sdk.read_all_attendance_logs(mid)
-                logger.info(f"[Machine {mid}] ✓ {len(records)} total records (no date filter)")
+                logger.info(f"{tag} ✓ {len(records)} total records (no date filter)")
             else:
                 records = sdk.read_attendance_logs_by_range(mid, start, end)
-                logger.info(f"[Machine {mid}] ✓ {len(records)} records in window")
+                logger.info(f"{tag} ✓ {len(records)} records in window")
             return records
         finally:
             sdk.disconnect(mid)
@@ -238,21 +239,22 @@ def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> Lis
 def ping_machine(machine: dict) -> bool:
     """Connect/disconnect only, to check that a machine is reachable. No log reads."""
     ip, port, mid = machine["ip"], machine["port"], machine["machine_id"]
+    tag = f"[Machine {mid}][{ip}]"
 
     with _machines_in_poll_lock:
         if mid in _machines_in_poll:
-            logger.debug(f"[Machine {mid}] Ping skipped — poll in progress")
+            logger.debug(f"{tag} Ping skipped — poll in progress")
             return True
 
     try:
         sdk = ZKDevice()
     except ZKSDKError as e:
-        logger.error(f"[Machine {mid}] Ping failed — SDK init error: {e}")
+        logger.error(f"{tag} Ping failed — SDK init error: {e}")
         return False
 
     connected = sdk.connect(ip, port, mid, timeout=CONNECT_TIMEOUT)
     if not connected:
-        logger.error(f"[Machine {mid}] Ping failed — unreachable at {ip}:{port}")
+        logger.error(f"{tag} Ping failed — unreachable")
         return False
 
     sdk.disconnect(mid)
@@ -283,12 +285,12 @@ def run_poll():
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(poll_machine, m, start, end): m for m in MACHINES}  # start=None means pull all
         for f in as_completed(futures):
-            mid = futures[f]["machine_id"]
+            m = futures[f]
             try:
                 records = f.result()
                 all_records.extend(records)
             except Exception as e:
-                logger.error(f"[Machine {mid}] Unhandled error: {e}")
+                logger.error(f"[Machine {m['machine_id']}][{m['ip']}] Unhandled error: {e}")
 
     logger.info(f"Total records pulled from all machines: {len(all_records)}")
 
@@ -319,11 +321,11 @@ def run_health_check():
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(ping_machine, m): m for m in MACHINES}
         for f in as_completed(futures):
-            mid = futures[f]["machine_id"]
+            m = futures[f]
             try:
                 f.result()
             except Exception as e:
-                logger.error(f"[Machine {mid}] Ping failed — unhandled error: {e}")
+                logger.error(f"[Machine {m['machine_id']}][{m['ip']}] Ping failed — unhandled error: {e}")
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

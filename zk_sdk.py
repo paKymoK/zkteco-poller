@@ -26,6 +26,8 @@ class ZKDevice:
     def __init__(self):
         # Must be called per thread — each machine runs in its own thread
         pythoncom.CoInitialize()
+        self.ip = None
+        self.port = None
         try:
             # DumbDispatch required for byref VARIANT params to work
             raw = win32com.client.Dispatch("zkemkeeper.ZKEM")
@@ -38,6 +40,10 @@ class ZKDevice:
 
     # ── Connection ────────────────────────────────────────────────────────────
 
+    def _tag(self, machine_id: int) -> str:
+        """[Machine x][ip] prefix used across all log lines for this device."""
+        return f"[Machine {machine_id}][{self.ip or 'unknown'}]"
+
     def connect(self, ip: str, port: int, machine_id: int, timeout: int = 5, warn_threshold: int = 2) -> bool:
         """
         Connect to a ZKTeco device over TCP/IP.
@@ -46,6 +52,8 @@ class ZKDevice:
         blocks the cycle. The Connect_Net thread continues silently in background
         until Windows TCP timeout cleans it up.
         """
+        self.ip = ip
+        self.port = port
         import concurrent.futures
         import time as _time
         start = _time.time()
@@ -57,7 +65,7 @@ class ZKDevice:
             except concurrent.futures.TimeoutError:
                 elapsed = round(_time.time() - start, 1)
                 logger.error(
-                    f"[Machine {machine_id}] Connection timed out after {elapsed}s — {ip}:{port} "
+                    f"{self._tag(machine_id)} Connection timed out after {elapsed}s "
                     f"(network problem or machine down)"
                 )
                 return False
@@ -68,21 +76,21 @@ class ZKDevice:
             if not result:
                 err = self._get_last_error()
                 logger.error(
-                    f"[Machine {machine_id}] Connection failed to {ip}:{port} "
+                    f"{self._tag(machine_id)} Connection failed "
                     f"— error: {err} ({_error_description(err)})"
                 )
                 return False
 
             if elapsed >= warn_threshold:
                 logger.warning(
-                    f"[Machine {machine_id}] Slow connection {elapsed}s — "
+                    f"{self._tag(machine_id)} Slow connection {elapsed}s — "
                     f"machine may be busy or network latency high"
                 )
             else:
-                logger.info(f"[Machine {machine_id}] Connected to {ip}:{port} in {elapsed}s")
+                logger.info(f"{self._tag(machine_id)} Connected in {elapsed}s")
             return True
         except Exception as e:
-            logger.error(f"[Machine {machine_id}] Connect exception: {e}")
+            logger.error(f"{self._tag(machine_id)} Connect exception: {e}")
             ex.shutdown(wait=False)
             return False
 
@@ -90,9 +98,9 @@ class ZKDevice:
         """Disconnect from device."""
         try:
             self.sdk.Disconnect()
-            logger.info(f"[Machine {machine_id}] Disconnected")
+            logger.info(f"{self._tag(machine_id)} Disconnected")
         except Exception as e:
-            logger.error(f"[Machine {machine_id}] Disconnect error: {e}")
+            logger.error(f"{self._tag(machine_id)} Disconnect error: {e}")
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
@@ -127,42 +135,42 @@ class ZKDevice:
                 info["server_time"]         = server_time.isoformat()
                 info["clock_drift_seconds"] = round(drift, 1)
         except Exception as e:
-            logger.debug(f"[Machine {machine_id}] GetDeviceTime skipped: {e}")
+            logger.debug(f"{self._tag(machine_id)} GetDeviceTime skipped: {e}")
 
         try:
             val = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
             if self.sdk.GetDeviceStatus(machine_id, 2, val):
                 info["user_count"] = int(val.value)
         except Exception as e:
-            logger.debug(f"[Machine {machine_id}] user_count skipped: {e}")
+            logger.debug(f"{self._tag(machine_id)} user_count skipped: {e}")
 
         try:
             val = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
             if self.sdk.GetDeviceStatus(machine_id, 6, val):
                 info["att_log_count"] = int(val.value)
         except Exception as e:
-            logger.debug(f"[Machine {machine_id}] att_log_count skipped: {e}")
+            logger.debug(f"{self._tag(machine_id)} att_log_count skipped: {e}")
 
         try:
             val = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BSTR, "")
             if self.sdk.GetSysOption(machine_id, "~ZKFPVersion", val):
                 info["firmware"] = str(val.value).strip()
         except Exception as e:
-            logger.debug(f"[Machine {machine_id}] firmware skipped: {e}")
+            logger.debug(f"{self._tag(machine_id)} firmware skipped: {e}")
 
         try:
             val = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BSTR, "")
             if self.sdk.GetSysOption(machine_id, "~SerialNumber", val):
                 info["serial"] = str(val.value).strip()
         except Exception as e:
-            logger.debug(f"[Machine {machine_id}] serial skipped: {e}")
+            logger.debug(f"{self._tag(machine_id)} serial skipped: {e}")
 
         try:
             val = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BSTR, "")
             if self.sdk.GetSysOption(machine_id, "~Platform", val):
                 info["platform"] = str(val.value).strip()
         except Exception as e:
-            logger.debug(f"[Machine {machine_id}] platform skipped: {e}")
+            logger.debug(f"{self._tag(machine_id)} platform skipped: {e}")
 
         return info
 
@@ -181,7 +189,7 @@ class ZKDevice:
                                  r["hour"], r["minute"], r["second"]) <= end
         ]
         logger.debug(
-            f"[Machine {machine_id}] {len(filtered)} records in window "
+            f"{self._tag(machine_id)} {len(filtered)} records in window "
             f"(filtered from {len(records)} total on device)"
         )
         return filtered
@@ -212,7 +220,7 @@ class ZKDevice:
                         wcode
                     )
                 except Exception as e:
-                    logger.error(f"[Machine {machine_id}] SSR_GetGeneralLogData error: {e}")
+                    logger.error(f"{self._tag(machine_id)} SSR_GetGeneralLogData error: {e}")
                     break
 
                 if not has_more:
@@ -232,12 +240,12 @@ class ZKDevice:
                     "work_code":   int(wcode.value),
                 })
 
-            logger.info(f"[Machine {machine_id}] Pulled {len(records)} records from device")
+            logger.info(f"{self._tag(machine_id)} Pulled {len(records)} records from device")
 
         except Exception as e:
             err = self._get_last_error()
             logger.error(
-                f"[Machine {machine_id}] Error reading logs: {e} "
+                f"{self._tag(machine_id)} Error reading logs: {e} "
                 f"— SDK error: {err} ({_error_description(err)})"
             )
 
