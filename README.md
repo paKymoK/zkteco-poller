@@ -158,6 +158,16 @@ docker buildx build --output type=local,dest=. .
 
 Output: `dist/ZKTecoPoller.exe` (same layout as the native `build.bat` build).
 
+Verify it's actually 32-bit before deploying it (the ZKTeco COM SDK is
+32-bit-only, so a 64-bit exe will fail to talk to the device even though it
+runs):
+
+```bash
+file dist/ZKTecoPoller.exe
+# must say: PE32 executable ... Intel 80386
+# NOT:      PE32+ executable ... x86-64
+```
+
 > **Note:** This proves the exe *builds and freezes* correctly. It does not
 > verify runtime behavior — talking to the ZKTeco device's COM SDK
 > (`win32com`/`pythoncom`) still requires running the exe on real Windows

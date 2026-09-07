@@ -183,6 +183,16 @@ docker buildx build --output type=local,dest=. .
 Kết quả: `dist/ZKTecoPoller.exe` (giống hệt cấu trúc khi build bằng
 `build.bat`).
 
+Kiểm tra lại đúng là bản 32-bit trước khi deploy (SDK COM của ZKTeco chỉ hỗ
+trợ 32-bit, nên exe 64-bit vẫn chạy được nhưng sẽ không giao tiếp được với
+máy chấm công):
+
+```bash
+file dist/ZKTecoPoller.exe
+# phải ra: PE32 executable ... Intel 80386
+# KHÔNG PHẢI: PE32+ executable ... x86-64
+```
+
 > **Lưu ý:** Cách này chỉ chứng minh exe *build và đóng gói* thành công, chưa
 > kiểm tra được hành vi lúc chạy thật — vì phần giao tiếp COM với máy chấm
 > công ZKTeco (`win32com`/`pythoncom`) vẫn cần chạy exe trên Windows thật, có
