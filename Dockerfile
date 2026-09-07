@@ -4,10 +4,10 @@
 # Python (tobix/pywine), so you don't need a Windows machine to run
 # build.bat. Requires BuildKit/buildx for the local-output final stage.
 #
-# Build (extracts the exe straight to ./dist on the host, no `docker run`
-# or `docker cp` needed):
+# Build (extracts the whole dist/ folder straight into the current
+# directory on the host, no `docker run` or `docker cp` needed):
 #
-#   docker buildx build --output type=local,dest=./dist .
+#   docker buildx build --output type=local,dest=. .
 #
 # Note: pywin32 (win32com/pythoncom) is Windows COM — Wine can emulate
 # enough of it for PyInstaller to import and freeze the app, but this
@@ -46,4 +46,4 @@ RUN wine pyinstaller \
     attendance_poller.py
 
 FROM scratch AS export
-COPY --from=builder /src/dist/ZKTecoPoller.exe /ZKTecoPoller.exe
+COPY --from=builder /src/dist /dist
