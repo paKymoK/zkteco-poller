@@ -35,18 +35,32 @@ ENV DEBIAN_FRONTEND=noninteractive
 # distro-provided "wine32" package on bookworm is not reliable for this.
 #
 # Debian no longer publishes i386 indexes for bookworm-updates/security (a
-# project-wide policy change, not a local network issue), so i386 is
-# restricted to the base "bookworm main" suite here — amd64 still pulls
-# from all three suites as normal.
+# project-wide policy change), so i386 is restricted to the base "bookworm
+# main" suite here — amd64 still pulls from all three suites as normal.
+#
+# Sources use https:// (not http://) because some networks reject plain
+# HTTP .deb downloads from deb.debian.org's CDN with a 403 "AuthorizedOnly"
+# while the same paths work fine over HTTPS. The base image has no CA
+# store yet, so HTTPS peer verification is disabled ONLY for this first
+# bootstrap install (to fetch ca-certificates itself) and re-enabled
+# immediately after — apt's own GPG/hash verification of the Release file
+# and each package still applies throughout, independent of TLS.
 RUN dpkg --add-architecture i386 \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && printf '%s\n' \
-       'deb [arch=amd64,i386] http://deb.debian.org/debian bookworm main' \
-       'deb [arch=amd64] http://deb.debian.org/debian bookworm-updates main' \
-       'deb [arch=amd64] http://deb.debian.org/debian-security bookworm-security main' \
+       'deb [arch=amd64,i386] https://deb.debian.org/debian bookworm main' \
+       'deb [arch=amd64] https://deb.debian.org/debian bookworm-updates main' \
+       'deb [arch=amd64] https://deb.debian.org/debian-security bookworm-security main' \
        > /etc/apt/sources.list \
+    && printf '%s\n' 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries \
+    && printf '%s\n' \
+       'Acquire::https::Verify-Peer "false";' \
+       'Acquire::https::Verify-Host "false";' \
+       > /etc/apt/apt.conf.d/99bootstrap-no-verify \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget gnupg2 xvfb \
+    && rm -f /etc/apt/apt.conf.d/99bootstrap-no-verify \
+    && apt-get update \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -q -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
     && wget -q -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
