@@ -38,13 +38,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # project-wide policy change), so i386 is restricted to the base "bookworm
 # main" suite here — amd64 still pulls from all three suites as normal.
 #
-# Sources use https:// (not http://) because some networks reject plain
-# HTTP .deb downloads from deb.debian.org's CDN with a 403 "AuthorizedOnly"
-# while the same paths work fine over HTTPS. The base image has no CA
-# store yet, so HTTPS peer verification is disabled ONLY for this first
-# bootstrap install (to fetch ca-certificates itself) and re-enabled
-# immediately after — apt's own GPG/hash verification of the Release file
-# and each package still applies throughout, independent of TLS.
+# Sources use https:// (not http://) because this network's corporate
+# proxy rejects plain HTTP .deb downloads outright (403 "AuthorizedOnly").
+# The proxy also does TLS inspection (re-signs HTTPS with its own cert, not
+# in any public trust store), so TLS peer verification is disabled
+# entirely here for both apt and wget rather than fought host-by-host.
+# This trades away transport-layer authenticity to the proxy — acceptable
+# for a local build-only image pulling public FOSS packages, since apt
+# and pip still independently verify package hashes/signatures. It does
+# NOT protect against a proxy that actively tampers with package content.
 RUN dpkg --add-architecture i386 \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && printf '%s\n' \
@@ -52,18 +54,16 @@ RUN dpkg --add-architecture i386 \
        'deb [arch=amd64] https://deb.debian.org/debian bookworm-updates main' \
        'deb [arch=amd64] https://deb.debian.org/debian-security bookworm-security main' \
        > /etc/apt/sources.list \
-    && printf '%s\n' 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries \
     && printf '%s\n' \
+       'Acquire::Retries "3";' \
        'Acquire::https::Verify-Peer "false";' \
        'Acquire::https::Verify-Host "false";' \
-       > /etc/apt/apt.conf.d/99bootstrap-no-verify \
+       > /etc/apt/apt.conf.d/99no-verify \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget gnupg2 xvfb \
-    && rm -f /etc/apt/apt.conf.d/99bootstrap-no-verify \
-    && apt-get update \
     && mkdir -pm755 /etc/apt/keyrings \
-    && wget -q -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
-    && wget -q -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
+    && wget -q --no-check-certificate -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+    && wget -q --no-check-certificate -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
     && apt-get update \
     && apt-get install -y --install-recommends winehq-stable \
     && rm -rf /var/lib/apt/lists/*
@@ -76,7 +76,7 @@ RUN xvfb-run wineboot --init && wineserver -w
 
 ARG PYTHON_VERSION=3.9.13
 # NOTE: no "-amd64" suffix — this is the 32-bit Windows installer.
-RUN wget -q -O /tmp/python-installer.exe \
+RUN wget -q --no-check-certificate -O /tmp/python-installer.exe \
     https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}.exe \
     && xvfb-run wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 \
        Include_doc=0 Include_test=0 Include_launcher=0 TargetDir='C:\Python39' \
@@ -85,11 +85,16 @@ RUN wget -q -O /tmp/python-installer.exe \
 
 WORKDIR /src
 
+# --trusted-host bypasses pip's own (certifi-based, OS-independent) TLS
+# verification for these hosts — same corporate-proxy TLS inspection
+# reason as the apt/wget flags above.
+ARG PIP_TRUSTED_HOSTS="--trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org"
+
 COPY requirements.txt .
-RUN xvfb-run wine python -m pip install --upgrade pip \
-    && xvfb-run wine python -m pip install --only-binary :all: greenlet==2.0.2 \
-    && xvfb-run wine python -m pip install -r requirements.txt \
-    && xvfb-run wine python -m pip install pyinstaller \
+RUN xvfb-run wine python -m pip install --upgrade $PIP_TRUSTED_HOSTS pip \
+    && xvfb-run wine python -m pip install $PIP_TRUSTED_HOSTS --only-binary :all: greenlet==2.0.2 \
+    && xvfb-run wine python -m pip install $PIP_TRUSTED_HOSTS -r requirements.txt \
+    && xvfb-run wine python -m pip install $PIP_TRUSTED_HOSTS pyinstaller \
     && wineserver -w
 
 COPY attendance_poller.py zk_sdk.py ./
