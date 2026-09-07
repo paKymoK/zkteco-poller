@@ -58,12 +58,14 @@ RUN dpkg --add-architecture i386 \
        'Acquire::Retries "3";' \
        'Acquire::https::Verify-Peer "false";' \
        'Acquire::https::Verify-Host "false";' \
+       'Acquire::http::No-Cache "true";' \
+       'Acquire::https::No-Cache "true";' \
        > /etc/apt/apt.conf.d/99no-verify \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget gnupg2 xvfb \
     && mkdir -pm755 /etc/apt/keyrings \
-    && wget -q --no-check-certificate -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
-    && wget -q --no-check-certificate -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
+    && wget -q --no-check-certificate --no-cache -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+    && wget -q --no-check-certificate --no-cache -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
     && apt-get update \
     && apt-get install -y --install-recommends winehq-stable \
     && rm -rf /var/lib/apt/lists/*
