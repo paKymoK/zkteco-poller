@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# Cross-builds ZKTecoPoller.exe on Linux using a 32-bit Wine prefix with
-# the official 32-bit Windows Python installed in it, so you don't need
-# a Windows machine to run build.bat. Requires BuildKit/buildx for the
-# local-output final stage.
+# Cross-builds ZKTecoPoller.exe on Linux using Wine with the official
+# 32-bit Windows Python installed in it (via WoW64, see below), so you
+# don't need a Windows machine to run build.bat. Requires BuildKit/buildx
+# for the local-output final stage.
 #
 # IMPORTANT: this must produce a 32-bit (PE32) exe, matching build.bat's
 # 32-bit Python requirement — the ZKTeco COM SDK (zkemkeeper.dll) is
@@ -11,10 +11,22 @@
 # server. An earlier version of this Dockerfile used the tobix/pywine
 # base image, which (as of this writing) bakes in the 64-bit Windows
 # Python installer unconditionally, silently producing a 64-bit exe that
-# would fail against the real device. WINEARCH=win32 below is what
-# actually pins this to 32-bit — verify with `file dist/ZKTecoPoller.exe`
-# after building; it must read "PE32 executable ... Intel 80386", not
-# "PE32+ ... x86-64".
+# would fail against the real device.
+#
+# This does NOT need `dpkg --add-architecture i386` / a separate i386
+# Wine build: modern WineHQ "wine-stable" ships WoW64 support built into
+# a single 64-bit-hosted Wine, which runs 32-bit Windows binaries (the
+# 32-bit Python installer, and anything built with it) natively without a
+# dedicated 32-bit prefix. Requesting the i386 architecture explicitly
+# actually broke the build here — apt couldn't resolve
+# `wine-stable (= 11.0.0.0~bookworm-1)` because current WineHQ bookworm
+# packages don't publish a matching i386 sub-package for that version.
+# What actually produces the 32-bit exe is running the 32-bit Python
+# installer (see PYTHON_VERSION below, no "-amd64" suffix) — Wine/WoW64
+# executes it as a 32-bit process regardless of the prefix itself, and
+# PyInstaller's bootloader bitness follows the interpreter running it.
+# Verify with `file dist/ZKTecoPoller.exe` after building; it must read
+# "PE32 executable ... Intel 80386", not "PE32+ ... x86-64".
 #
 # Build (extracts the whole dist/ folder straight into the current
 # directory on the host, no `docker run` or `docker cp` needed):
@@ -31,13 +43,6 @@ FROM debian:bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# WineHQ's own packages are needed for a working win32 (i386) Wine — the
-# distro-provided "wine32" package on bookworm is not reliable for this.
-#
-# Debian no longer publishes i386 indexes for bookworm-updates/security (a
-# project-wide policy change), so i386 is restricted to the base "bookworm
-# main" suite here — amd64 still pulls from all three suites as normal.
-#
 # Sources use https:// (not http://) because this network's corporate
 # proxy rejects plain HTTP .deb downloads outright (403 "AuthorizedOnly").
 # The proxy also does TLS inspection (re-signs HTTPS with its own cert, not
@@ -47,31 +52,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 # for a local build-only image pulling public FOSS packages, since apt
 # and pip still independently verify package hashes/signatures. It does
 # NOT protect against a proxy that actively tampers with package content.
-RUN dpkg --add-architecture i386 \
-    && rm -f /etc/apt/sources.list.d/debian.sources \
-    && printf '%s\n' \
-       'deb [arch=amd64,i386] https://deb.debian.org/debian bookworm main' \
-       'deb [arch=amd64] https://deb.debian.org/debian bookworm-updates main' \
-       'deb [arch=amd64] https://deb.debian.org/debian-security bookworm-security main' \
-       > /etc/apt/sources.list \
-    && printf '%s\n' \
+RUN sed -i 's#http://#https://#g' /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    printf '%s\n' \
        'Acquire::Retries "3";' \
        'Acquire::https::Verify-Peer "false";' \
        'Acquire::https::Verify-Host "false";' \
-       'Acquire::http::No-Cache "true";' \
-       'Acquire::https::No-Cache "true";' \
        > /etc/apt/apt.conf.d/99no-verify \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget gnupg2 xvfb \
     && mkdir -pm755 /etc/apt/keyrings \
-    && wget -q --no-check-certificate --no-cache -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
-    && wget -q --no-check-certificate --no-cache -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
+    && wget -q --no-check-certificate -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+    && wget -q --no-check-certificate -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
     && apt-get update \
     && apt-get install -y --install-recommends winehq-stable \
     && rm -rf /var/lib/apt/lists/*
 
-ENV WINEARCH=win32 \
-    WINEPREFIX=/wine \
+ENV WINEPREFIX=/wine \
     WINEDEBUG=-all
 
 RUN xvfb-run wineboot --init && wineserver -w
