@@ -33,7 +33,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # WineHQ's own packages are needed for a working win32 (i386) Wine — the
 # distro-provided "wine32" package on bookworm is not reliable for this.
+#
+# Debian no longer publishes i386 indexes for bookworm-updates/security (a
+# project-wide policy change, not a local network issue), so i386 is
+# restricted to the base "bookworm main" suite here — amd64 still pulls
+# from all three suites as normal.
 RUN dpkg --add-architecture i386 \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+       'deb [arch=amd64,i386] http://deb.debian.org/debian bookworm main' \
+       'deb [arch=amd64] http://deb.debian.org/debian bookworm-updates main' \
+       'deb [arch=amd64] http://deb.debian.org/debian-security bookworm-security main' \
+       > /etc/apt/sources.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget gnupg2 xvfb \
     && mkdir -pm755 /etc/apt/keyrings \
