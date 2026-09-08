@@ -82,6 +82,7 @@ COPY config/.env config/.env
 RUN xvfb-run wine 'C:\Python39-32\python.exe' -m PyInstaller \
     --clean \
     --onefile \
+    --noupx \
     --name ZKTecoPoller \
     --add-data "config/.env;config" \
     --hidden-import apscheduler \
