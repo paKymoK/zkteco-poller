@@ -59,8 +59,9 @@ ARG PYTHON_VERSION=3.9.13
 RUN PY_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}.exe"; \
     (curl -fsSLk -o /tmp/python-installer.exe "$PY_URL" \
      || wget -q --no-check-certificate -O /tmp/python-installer.exe "$PY_URL") \
-    && wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=0 \
+    && xvfb-run wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=0 \
        Include_doc=0 Include_test=0 Include_launcher=0 TargetDir='C:\Python39-32' \
+    && wineserver -w \
     && rm /tmp/python-installer.exe
 
 # --trusted-host bypasses pip's own (certifi-based, OS-independent) TLS
@@ -69,15 +70,16 @@ RUN PY_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_
 ARG PIP_TRUSTED_HOSTS="--trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org"
 
 COPY requirements.txt .
-RUN wine 'C:\Python39-32\python.exe' -m pip install --upgrade $PIP_TRUSTED_HOSTS pip \
-    && wine 'C:\Python39-32\python.exe' -m pip install $PIP_TRUSTED_HOSTS --only-binary :all: greenlet==2.0.2 \
-    && wine 'C:\Python39-32\python.exe' -m pip install $PIP_TRUSTED_HOSTS -r requirements.txt \
-    && wine 'C:\Python39-32\python.exe' -m pip install $PIP_TRUSTED_HOSTS pyinstaller
+RUN xvfb-run wine 'C:\Python39-32\python.exe' -m pip install --upgrade $PIP_TRUSTED_HOSTS pip \
+    && xvfb-run wine 'C:\Python39-32\python.exe' -m pip install $PIP_TRUSTED_HOSTS --only-binary :all: greenlet==2.0.2 \
+    && xvfb-run wine 'C:\Python39-32\python.exe' -m pip install $PIP_TRUSTED_HOSTS -r requirements.txt \
+    && xvfb-run wine 'C:\Python39-32\python.exe' -m pip install $PIP_TRUSTED_HOSTS pyinstaller \
+    && wineserver -w
 
 COPY attendance_poller.py zk_sdk.py ./
 COPY config/.env config/.env
 
-RUN wine 'C:\Python39-32\python.exe' -m PyInstaller \
+RUN xvfb-run wine 'C:\Python39-32\python.exe' -m PyInstaller \
     --clean \
     --onefile \
     --name ZKTecoPoller \
@@ -93,7 +95,8 @@ RUN wine 'C:\Python39-32\python.exe' -m PyInstaller \
     --hidden-import loguru \
     --hidden-import dotenv \
     --hidden-import pyodbc \
-    attendance_poller.py
+    attendance_poller.py \
+    && wineserver -w
 
 FROM scratch AS export
 COPY --from=builder /src/dist /dist
