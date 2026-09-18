@@ -17,6 +17,8 @@ Config in config/.env:
     POLL_TIME=01:00
     DB_CONNECTION_STRING=...
     CONNECT_TIMEOUT_SECONDS=5
+    READ_TIMEOUT_SECONDS=120
+    INFO_TIMEOUT_SECONDS=10
     PING_ENABLED=true
     PING_INTERVAL_MINUTES=5
 """
@@ -26,7 +28,7 @@ import sys
 import signal
 import threading
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import pyodbc
 from typing import Dict, List, Optional, Set
@@ -40,12 +42,20 @@ from zk_sdk import ZKDevice, ZKSDKError
 load_dotenv("config/.env")
 
 CONNECT_TIMEOUT = int(os.getenv("CONNECT_TIMEOUT_SECONDS", 5))
+READ_TIMEOUT_SECONDS = int(os.getenv("READ_TIMEOUT_SECONDS", 120))
+INFO_TIMEOUT_SECONDS = int(os.getenv("INFO_TIMEOUT_SECONDS", 10))
 LOOKBACK_DAYS   = int(os.getenv("POLL_LOOKBACK_DAYS", 7))
 POLL_TIME       = os.getenv("POLL_TIME", "01:00")
 MAX_WORKERS     = int(os.getenv("MAX_WORKERS", 10))
 CLOCK_DRIFT_THRESHOLD_SECONDS = int(os.getenv("CLOCK_DRIFT_THRESHOLD_SECONDS", 60))
 PING_ENABLED    = os.getenv("PING_ENABLED", "true").strip().lower() == "true"
 PING_INTERVAL_MINUTES = int(os.getenv("PING_INTERVAL_MINUTES", 5))
+
+# Hard ceiling on a single machine's poll task (connect + info + log read).
+# Bounds run_poll() even if a lower-level timeout is somehow missed, so one
+# stuck machine can never freeze the scheduler.
+POLL_TASK_TIMEOUT_SECONDS = CONNECT_TIMEOUT + INFO_TIMEOUT_SECONDS + READ_TIMEOUT_SECONDS + 30
+PING_TASK_TIMEOUT_SECONDS = CONNECT_TIMEOUT + 30
 
 DB_CONN_STR = (
     "DRIVER={{ODBC Driver 17 for SQL Server}};"
@@ -97,11 +107,22 @@ signal.signal(signal.SIGTERM, shutdown)
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_db_connection() -> pyodbc.Connection:
-    if not os.getenv("DB_SERVER") or not os.getenv("DB_USER"):
+    if not os.getenv("DB_SERVER") or not os.getenv("DB_USER") or not os.getenv("DB_PASSWORD"):
         raise RuntimeError(
-            "DB_SERVER and DB_USER must be set in config/.env"
+            "DB_SERVER, DB_USER and DB_PASSWORD must be set in config/.env"
         )
     return pyodbc.connect(DB_CONN_STR, autocommit=False)
+
+
+def verify_checkinout_table(conn: pyodbc.Connection) -> None:
+    """Fail fast at startup if the CHECKINOUT table isn't reachable in this DB."""
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?",
+        "CHECKINOUT"
+    )
+    if cursor.fetchone() is None:
+        raise RuntimeError("Table CHECKINOUT not found in the configured database")
 
 
 def fetch_existing_keys(
@@ -137,16 +158,43 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
     if not records:
         return 0
 
-    # Group records by employee so we only query existing keys once per employee
-    by_employee: Dict[int, List[dict]] = {}
+    # Parse and validate each record individually first, so one malformed
+    # record (bad date, non-numeric employee_id) only drops that record
+    # instead of failing the whole batch across all machines.
+    parsed: List[tuple] = []
     for r in records:
-        uid = int(r["employee_id"])
-        by_employee.setdefault(uid, []).append(r)
+        try:
+            uid = int(r["employee_id"])
+        except (ValueError, TypeError):
+            logger.error(
+                f"Skipping record with non-numeric employee_id={r.get('employee_id')!r} "
+                f"(machine {r.get('machine_id')})"
+            )
+            continue
 
-    all_times = [
-        datetime(r["year"], r["month"], r["day"], r["hour"], r["minute"], r["second"])
-        for r in records
-    ]
+        try:
+            punch_time = datetime(
+                r["year"], r["month"], r["day"],
+                r["hour"], r["minute"], r["second"]
+            )
+        except (ValueError, TypeError, KeyError) as e:
+            logger.error(
+                f"Skipping record with invalid timestamp for employee_id={uid} "
+                f"(machine {r.get('machine_id')}): {e}"
+            )
+            continue
+
+        parsed.append((uid, punch_time, r))
+
+    if not parsed:
+        return 0
+
+    # Group records by employee so we only query existing keys once per employee
+    by_employee: Dict[int, List[tuple]] = {}
+    for uid, punch_time, r in parsed:
+        by_employee.setdefault(uid, []).append((punch_time, r))
+
+    all_times = [punch_time for _, punch_time, _ in parsed]
     window_start = min(all_times) if LOOKBACK_DAYS > 0 else None
     window_end   = max(all_times)
 
@@ -157,11 +205,7 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
     for uid, emp_records in by_employee.items():
         existing = fetch_existing_keys(conn, uid, window_start, window_end)
 
-        for r in emp_records:
-            punch_time = datetime(
-                r["year"], r["month"], r["day"],
-                r["hour"], r["minute"], r["second"]
-            )
+        for punch_time, r in emp_records:
             if punch_time in existing:
                 continue
 
@@ -212,7 +256,7 @@ def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> Lis
             return []
 
         try:
-            info = sdk.get_device_info(mid)
+            info = sdk.get_device_info(mid, timeout=INFO_TIMEOUT_SECONDS)
             drift = info.get("clock_drift_seconds")
             if drift is not None:
                 if drift >= CLOCK_DRIFT_THRESHOLD_SECONDS:
@@ -223,10 +267,10 @@ def poll_machine(machine: dict, start: Optional[datetime], end: datetime) -> Lis
                 logger.error(f"{tag} Clock drift: unavailable")
 
             if start is None:
-                records = sdk.read_all_attendance_logs(mid)
+                records = sdk.read_all_attendance_logs(mid, timeout=READ_TIMEOUT_SECONDS)
                 logger.info(f"{tag} ✓ {len(records)} total records (no date filter)")
             else:
-                records = sdk.read_attendance_logs_by_range(mid, start, end)
+                records = sdk.read_attendance_logs_by_range(mid, start, end, timeout=READ_TIMEOUT_SECONDS)
                 logger.info(f"{tag} ✓ {len(records)} records in window")
             return records
         finally:
@@ -282,15 +326,28 @@ def run_poll():
 
     all_records: List[dict] = []
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+    # Not using `with ThreadPoolExecutor(...) as ex:` on purpose: its __exit__
+    # calls shutdown(wait=True), which would block until every thread finishes
+    # regardless of any timeout below. shutdown(wait=False) lets a stuck
+    # machine's thread run to completion in the background without freezing
+    # the scheduler for the next cycle.
+    ex = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    try:
         futures = {ex.submit(poll_machine, m, start, end): m for m in MACHINES}  # start=None means pull all
-        for f in as_completed(futures):
+        for f in futures:
             m = futures[f]
             try:
-                records = f.result()
+                records = f.result(timeout=POLL_TASK_TIMEOUT_SECONDS)
                 all_records.extend(records)
+            except FutureTimeoutError:
+                logger.error(
+                    f"[Machine {m['machine_id']}][{m['ip']}] Poll timed out after "
+                    f"{POLL_TASK_TIMEOUT_SECONDS}s — abandoning, will retry next cycle"
+                )
             except Exception as e:
                 logger.error(f"[Machine {m['machine_id']}][{m['ip']}] Unhandled error: {e}")
+    finally:
+        ex.shutdown(wait=False)
 
     logger.info(f"Total records pulled from all machines: {len(all_records)}")
 
@@ -318,14 +375,22 @@ def run_poll():
 # ── Health check ──────────────────────────────────────────────────────────────
 
 def run_health_check():
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+    ex = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    try:
         futures = {ex.submit(ping_machine, m): m for m in MACHINES}
-        for f in as_completed(futures):
+        for f in futures:
             m = futures[f]
             try:
-                f.result()
+                f.result(timeout=PING_TASK_TIMEOUT_SECONDS)
+            except FutureTimeoutError:
+                logger.error(
+                    f"[Machine {m['machine_id']}][{m['ip']}] Ping timed out after "
+                    f"{PING_TASK_TIMEOUT_SECONDS}s"
+                )
             except Exception as e:
                 logger.error(f"[Machine {m['machine_id']}][{m['ip']}] Ping failed — unhandled error: {e}")
+    finally:
+        ex.shutdown(wait=False)
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
@@ -375,11 +440,14 @@ if __name__ == "__main__":
         logger.info(f"  Machine {m['machine_id']} → {m['ip']}:{m['port']}")
     logger.info("=" * 50)
 
-    # Verify DB connection before starting
+    # Verify DB connection and schema before starting
     logger.info("Checking database connection...")
     try:
         conn = get_db_connection()
-        conn.close()
+        try:
+            verify_checkinout_table(conn)
+        finally:
+            conn.close()
         logger.info("Database connection OK")
     except Exception as e:
         logger.error(f"Database connection failed at startup: {e}")

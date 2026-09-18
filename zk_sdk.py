@@ -8,6 +8,7 @@ The DLL must be registered via:
 
 from datetime import datetime
 from loguru import logger
+import concurrent.futures
 import pythoncom
 import win32com.client
 from win32com.client import VARIANT
@@ -54,7 +55,6 @@ class ZKDevice:
         """
         self.ip = ip
         self.port = port
-        import concurrent.futures
         import time as _time
         start = _time.time()
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -112,7 +112,24 @@ class ZKDevice:
         except Exception:
             return -1
 
-    def get_device_info(self, machine_id: int) -> dict:
+    def _run_with_timeout(self, machine_id: int, label: str, fn, timeout: float):
+        """
+        Run fn() in a worker thread and enforce a hard timeout. These COM calls
+        (log reads, device info) have no native timeout param and can hang
+        indefinitely if the connection drops mid-call. Mirrors connect()'s
+        approach: abandons the thread on timeout rather than blocking on it.
+        """
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = ex.submit(fn)
+            try:
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                raise ZKSDKError(f"{label} timed out after {timeout}s")
+        finally:
+            ex.shutdown(wait=False)
+
+    def get_device_info(self, machine_id: int, timeout: float = 10) -> dict:
         """Pull key diagnostic info from the device."""
         info = {}
 
@@ -123,7 +140,11 @@ class ZKDevice:
             hour   = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
             minute = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
             second = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-            ok = self.sdk.GetDeviceTime(machine_id, year, month, day, hour, minute, second)
+            ok = self._run_with_timeout(
+                machine_id, "GetDeviceTime",
+                lambda: self.sdk.GetDeviceTime(machine_id, year, month, day, hour, minute, second),
+                timeout,
+            )
             if ok:
                 device_time = datetime(
                     int(year.value), int(month.value), int(day.value),
@@ -176,13 +197,13 @@ class ZKDevice:
 
     # ── Attendance Logs ───────────────────────────────────────────────────────
 
-    def read_all_attendance_logs(self, machine_id: int) -> list:
+    def read_all_attendance_logs(self, machine_id: int, timeout: float = 120) -> list:
         """Pull every attendance record stored on the device with no date filter."""
-        return self._fetch_logs(machine_id)
+        return self._fetch_logs(machine_id, timeout)
 
-    def read_attendance_logs_by_range(self, machine_id: int, start: datetime, end: datetime) -> list:
+    def read_attendance_logs_by_range(self, machine_id: int, start: datetime, end: datetime, timeout: float = 120) -> list:
         """Pull all logs from device and filter to the requested date range in Python."""
-        records = self._fetch_logs(machine_id)
+        records = self._fetch_logs(machine_id, timeout)
         filtered = [
             r for r in records
             if start <= datetime(r["year"], r["month"], r["day"],
@@ -194,7 +215,21 @@ class ZKDevice:
         )
         return filtered
 
-    def _fetch_logs(self, machine_id: int) -> list:
+    def _fetch_logs(self, machine_id: int, timeout: float = 120) -> list:
+        """
+        Run the actual log read under a hard timeout — SSR_GetGeneralLogData has
+        no native timeout and can hang indefinitely if the connection drops
+        mid-transfer, which would otherwise freeze the whole poll cycle.
+        """
+        try:
+            return self._run_with_timeout(
+                machine_id, "Log read", lambda: self._fetch_logs_body(machine_id), timeout
+            )
+        except ZKSDKError as e:
+            logger.error(f"{self._tag(machine_id)} {e}")
+            return []
+
+    def _fetch_logs_body(self, machine_id: int) -> list:
         records = []
         try:
             self.sdk.ReadGeneralLogData(machine_id)
@@ -226,15 +261,26 @@ class ZKDevice:
                 if not has_more:
                     break
 
+                try:
+                    year_i, month_i, day_i = int(year.value), int(month.value), int(day.value)
+                    hour_i, minute_i, second_i = int(hour.value), int(minute.value), int(second.value)
+                    datetime(year_i, month_i, day_i, hour_i, minute_i, second_i)  # validate
+                except (ValueError, TypeError) as e:
+                    logger.warning(
+                        f"{self._tag(machine_id)} Skipping malformed log record "
+                        f"(employee_id={str(enroll.value).strip()!r}): {e}"
+                    )
+                    continue
+
                 records.append({
                     "machine_id":  machine_id,
                     "employee_id": str(enroll.value).strip(),
-                    "year":        int(year.value),
-                    "month":       int(month.value),
-                    "day":         int(day.value),
-                    "hour":        int(hour.value),
-                    "minute":      int(minute.value),
-                    "second":      int(second.value),
+                    "year":        year_i,
+                    "month":       month_i,
+                    "day":         day_i,
+                    "hour":        hour_i,
+                    "minute":      minute_i,
+                    "second":      second_i,
                     "verify_mode": int(verify.value),
                     "in_out_mode": int(inout.value),
                     "work_code":   int(wcode.value),
