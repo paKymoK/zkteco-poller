@@ -154,6 +154,16 @@ def fetch_existing_keys(
     return {row.CHECKTIME for row in cursor.fetchall()}
 
 
+def _truncate_field(value: str, limit: int, field: str, uid: int, punch_time: datetime) -> str:
+    """Clip a value to its CHECKINOUT column width, warning if it actually cuts data."""
+    if len(value) > limit:
+        logger.warning(
+            f"[Insert] USERID={uid} CHECKTIME={punch_time} {field}={value!r} "
+            f"exceeds column limit ({limit}) — truncated to {value[:limit]!r}"
+        )
+    return value[:limit]
+
+
 def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
     """
     Insert records into CHECKINOUT, skipping any that already exist.
@@ -213,10 +223,17 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
             if punch_time in existing:
                 continue
 
+            checktype = (
+                _truncate_field(str(r["in_out_mode"]), 1, "CHECKTYPE", uid, punch_time)
+                if r["in_out_mode"] != 255 else None
+            )
+            workcode = _truncate_field(str(r["work_code"]), 24, "WorkCode", uid, punch_time)
+            badgenumber = _truncate_field(str(uid), 24, "Badgenumber", uid, punch_time)
+
             logger.debug(
                 f"[Insert] USERID={uid} CHECKTIME={punch_time} "
-                f"CHECKTYPE={r['in_out_mode']!r} VERIFYCODE={r['verify_mode']} "
-                f"WorkCode={r['work_code']!r} Badgenumber={str(uid)!r}"
+                f"CHECKTYPE={checktype!r} VERIFYCODE={r['verify_mode']} "
+                f"WorkCode={workcode!r} Badgenumber={badgenumber!r}"
             )
             cursor.execute(
                 "INSERT INTO CHECKINOUT "
@@ -224,10 +241,10 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 uid,
                 punch_time,
-                str(r["in_out_mode"]) if r["in_out_mode"] != 255 else None,
+                checktype,                    # CHECKTYPE nvarchar(1)
                 r["verify_mode"],
-                str(r["work_code"]),
-                str(uid),
+                workcode,                     # WorkCode varchar(24)
+                badgenumber,                  # Badgenumber nvarchar(24)
                 "ZKPoller",                   # InsertedBy noreply
                 now,                          # InsertedDate datetime
             )
