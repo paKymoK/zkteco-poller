@@ -16,6 +16,9 @@ Config in config/.env:
     POLL_LOOKBACK_DAYS=7
     POLL_TIME=01:00
     DB_CONNECTION_STRING=...
+    DB_DRIVER=ODBC Driver 17 for SQL Server  (must match a driver name from
+        `Get-OdbcDriver` on the host — older Windows Server boxes may only
+        have the legacy "SQL Server" driver registered)
     CONNECT_TIMEOUT_SECONDS=5
     READ_TIMEOUT_SECONDS=120
     INFO_TIMEOUT_SECONDS=10
@@ -58,12 +61,13 @@ POLL_TASK_TIMEOUT_SECONDS = CONNECT_TIMEOUT + INFO_TIMEOUT_SECONDS + READ_TIMEOU
 PING_TASK_TIMEOUT_SECONDS = CONNECT_TIMEOUT + 30
 
 DB_CONN_STR = (
-    "DRIVER={{ODBC Driver 17 for SQL Server}};"
+    "DRIVER={{{driver}}};"
     "SERVER={server},{port};"
     "DATABASE={db};"
     "UID={user};"
     "PWD={pwd}"
 ).format(
+    driver=os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server"),
     server=os.getenv("DB_SERVER", ""),
     port=os.getenv("DB_PORT", "1433"),
     db=os.getenv("DB_NAME", ""),
