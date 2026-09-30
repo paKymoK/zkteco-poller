@@ -154,14 +154,37 @@ def fetch_existing_keys(
     return {row.CHECKTIME for row in cursor.fetchall()}
 
 
-def _truncate_field(value: str, limit: int, field: str, uid: int, punch_time: datetime) -> str:
-    """Clip a value to its CHECKINOUT column width, warning if it actually cuts data."""
-    if len(value) > limit:
+def _safe_str_column(uid: int, punch_time: datetime, field: str, value, limit: int) -> Optional[str]:
+    """
+    Best-effort value for an optional CHECKINOUT column. USERID/CHECKTIME are the
+    only columns this poller treats as required — everything else is nulled out
+    (with a warning) rather than truncated (misleading) or failing the insert.
+    """
+    if value is None:
+        return None
+    try:
+        text = str(value)
+    except Exception as e:
+        logger.warning(f"[Insert] USERID={uid} CHECKTIME={punch_time} {field} unreadable ({e}) — inserting NULL")
+        return None
+    if len(text) > limit:
         logger.warning(
-            f"[Insert] USERID={uid} CHECKTIME={punch_time} {field}={value!r} "
-            f"exceeds column limit ({limit}) — truncated to {value[:limit]!r}"
+            f"[Insert] USERID={uid} CHECKTIME={punch_time} {field}={text!r} "
+            f"exceeds column limit ({limit}) — inserting NULL instead of truncating"
         )
-    return value[:limit]
+        return None
+    return text
+
+
+def _safe_int_column(uid: int, punch_time: datetime, field: str, value) -> Optional[int]:
+    """Best-effort int for an optional CHECKINOUT column — NULL on anything unparseable."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError) as e:
+        logger.warning(f"[Insert] USERID={uid} CHECKTIME={punch_time} {field}={value!r} invalid ({e}) — inserting NULL")
+        return None
 
 
 def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
@@ -223,31 +246,43 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
             if punch_time in existing:
                 continue
 
+            in_out_mode = r.get("in_out_mode")
             checktype = (
-                _truncate_field(str(r["in_out_mode"]), 1, "CHECKTYPE", uid, punch_time)
-                if r["in_out_mode"] != 255 else None
+                None if in_out_mode is None or in_out_mode == 255
+                else _safe_str_column(uid, punch_time, "CHECKTYPE", in_out_mode, 1)
             )
-            workcode = _truncate_field(str(r["work_code"]), 24, "WorkCode", uid, punch_time)
-            badgenumber = _truncate_field(str(uid), 24, "Badgenumber", uid, punch_time)
+            verifycode  = _safe_int_column(uid, punch_time, "VERIFYCODE", r.get("verify_mode"))
+            workcode    = _safe_str_column(uid, punch_time, "WorkCode", r.get("work_code"), 24)
+            badgenumber = _safe_str_column(uid, punch_time, "Badgenumber", uid, 24)
 
             logger.debug(
                 f"[Insert] USERID={uid} CHECKTIME={punch_time} "
-                f"CHECKTYPE={checktype!r} VERIFYCODE={r['verify_mode']} "
+                f"CHECKTYPE={checktype!r} VERIFYCODE={verifycode!r} "
                 f"WorkCode={workcode!r} Badgenumber={badgenumber!r}"
             )
-            cursor.execute(
-                "INSERT INTO CHECKINOUT "
-                "(USERID, CHECKTIME, CHECKTYPE, VERIFYCODE, WorkCode, Badgenumber, InsertedBy, InsertedDate) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                uid,
-                punch_time,
-                checktype,                    # CHECKTYPE nvarchar(1)
-                r["verify_mode"],
-                workcode,                     # WorkCode varchar(24)
-                badgenumber,                  # Badgenumber nvarchar(24)
-                "ZKPoller",                   # InsertedBy noreply
-                now,                          # InsertedDate datetime
-            )
+            try:
+                cursor.execute(
+                    "INSERT INTO CHECKINOUT "
+                    "(USERID, CHECKTIME, CHECKTYPE, VERIFYCODE, WorkCode, Badgenumber, InsertedBy, InsertedDate) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    uid,
+                    punch_time,
+                    checktype,                    # CHECKTYPE nvarchar(1)  — nice-to-have, NULL on any problem
+                    verifycode,                   # VERIFYCODE int         — nice-to-have, NULL on any problem
+                    workcode,                     # WorkCode varchar(24)   — nice-to-have, NULL on any problem
+                    badgenumber,                  # Badgenumber nvarchar(24) — nice-to-have, NULL on any problem
+                    "ZKPoller",                   # InsertedBy noreply
+                    now,                          # InsertedDate datetime
+                )
+            except pyodbc.Error as e:
+                # USERID/CHECKTIME are the only columns we require — if the row
+                # still fails for some other reason (e.g. an unexpected NOT NULL
+                # constraint), skip just this row instead of losing the whole batch.
+                logger.error(
+                    f"[Insert] Failed for USERID={uid} CHECKTIME={punch_time}: {e} — skipping this record"
+                )
+                continue
+
             existing.add(punch_time)  # guard against dupes within the same batch
             inserted += 1
 
