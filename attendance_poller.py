@@ -238,12 +238,16 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
     inserted = 0
     now = datetime.now()
     cursor = conn.cursor()
+    per_machine_inserted: Dict[object, int] = {}
+    per_machine_skipped: Dict[object, int] = {}
 
     for uid, emp_records in by_employee.items():
         existing = fetch_existing_keys(conn, uid, window_start, window_end)
 
         for punch_time, r in emp_records:
+            mid = r.get("machine_id")
             if punch_time in existing:
+                per_machine_skipped[mid] = per_machine_skipped.get(mid, 0) + 1
                 continue
 
             in_out_mode = r.get("in_out_mode")
@@ -285,8 +289,17 @@ def insert_records(conn: pyodbc.Connection, records: List[dict]) -> int:
 
             existing.add(punch_time)  # guard against dupes within the same batch
             inserted += 1
+            per_machine_inserted[mid] = per_machine_inserted.get(mid, 0) + 1
 
     conn.commit()
+
+    for mid in sorted(set(per_machine_inserted) | set(per_machine_skipped), key=lambda m: (m is None, m)):
+        tag = f"[Machine {mid}]" if mid is not None else "[Machine unknown]"
+        logger.info(
+            f"{tag} Inserted: {per_machine_inserted.get(mid, 0)} | "
+            f"Skipped (already exist): {per_machine_skipped.get(mid, 0)}"
+        )
+
     return inserted
 
 
